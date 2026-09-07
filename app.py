@@ -45,11 +45,6 @@ ACTION_TEXT = {"slot": "→ slot {slot}", "replace": "replaces slot {slot} ({old
                "skipped_full": "skipped: {note}", "capped": "not recorded: {note}"}
 
 
-def lang_choices(track: Optional[str]) -> list[tuple[str, str]]:
-    codes = TRACKS.get(track or "") or sorted({c for langs in TRACKS.values() for c in langs})
-    return [(display_name(code), code) for code in codes]
-
-
 def deadline_text() -> str:
     d = settings.deadline.astimezone(dt.timezone.utc)
     return f"{d:%A %d %B %Y, %H:%M} UTC (23:59 AoE on {(d - dt.timedelta(hours=12)):%d %B})"
@@ -152,26 +147,23 @@ def slot_panel(key: SlotKey, team: Team, manifest: dict[str, Any]) -> str:
             f"{manifest.get('uploads', 0)} / {settings.max_uploads_per_key}")
 
 
-def on_track_change(track: Optional[str]):
-    return gr.update(choices=lang_choices(track), value=None)
-
-
-def on_validate(team_name, track, lang, llm, retriever, system_type, email, file):
-    """Validate one file; on success show the slot panel and enable submission."""
+def on_validate(team_name, track, llm, retriever, system_type, email, file):
+    """Validate one file; its language comes from the records. On success show the slot panel."""
     def fail(msg: str, report_path: Optional[str] = None):
         return (msg, gr.update(value=report_path, visible=report_path is not None), gr.update(value="", visible=False),
                 gr.update(visible=False, choices=[], value=None), gr.update(visible=False), None)
 
-    err, team, path = _common_checks(team_name, track, llm, retriever, system_type, email, file, lang=lang, need_lang=True)
+    err, team, path = _common_checks(team_name, track, llm, retriever, system_type, email, file)
     if err:
         return fail(err)
     original = os.path.basename(path)
     if is_zip(path):
         return fail("This is a zip archive. Use the **Whole track (zip)** tab for it, or upload one per-language `.jsonl` here.")
     try:
-        report = single_file_report(path, track=track, lang=lang, name=original)
+        report = single_file_report(path, track=track, lang=None, name=original)
     except UsageProblem as exc:
         return fail(f"Could not validate: {exc}")
+    lang = report.files[0].language
     log.info("validated team=%s track=%s lang=%s file=%s size=%d status=%s errors=%d warnings=%d",
              team.slug, track, lang, original, os.path.getsize(path), report.status, report.n_errors, report.n_warnings)
     text = render(report, color=False, unicode=True)
@@ -184,7 +176,7 @@ def on_validate(team_name, track, lang, llm, retriever, system_type, email, file
     manifest, _ = slots.manifest(key, team.name)
     free = slots.next_free_slot(manifest)
     head = ("### ✓ Validation passed" + (" with warnings" if report.n_warnings else "")
-            + f" — matched team **{team.name}**\nReview the slots below, then submit.")
+            + f" — team **{team.name}**, language **{display_name(lang)}** (read from the records)\nReview the slots below, then submit.")
     if free is not None:
         submit = gr.update(visible=True, value=f"Submit to slot {free}")
         replace = gr.update(visible=False, choices=[], value=None)
@@ -407,13 +399,12 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
                 with gr.Column():
                     team_name = gr.Textbox(label="Team name", placeholder="exactly as on the registration form")
                     track = gr.Radio(choices=[(v, k) for k, v in TRACK_LABELS.items()], label="Track", value=None)
-                    language = gr.Dropdown(choices=lang_choices(None), label="Language", value=None)
                     system_type = gr.Radio(choices=SYSTEM_TYPES, label="System type", value=None)
                 with gr.Column():
                     llm = gr.Textbox(label="LLM", placeholder="e.g. Alibaba-NLP/Tongyi-DeepResearch-30B-A3B")
                     retriever = gr.Textbox(label="Retriever", placeholder="e.g. Qwen/Qwen3-Embedding-8B or BM25")
                     email = gr.Textbox(label="Contact email", placeholder="receipt goes here and to the team contact")
-                    upload = gr.File(label="Run file (.jsonl or .jsonl.gz, one language)", file_types=[".jsonl", ".gz"], type="filepath")
+                    upload = gr.File(label="Run file (.jsonl or .jsonl.gz, one language; the records say which)", file_types=[".jsonl", ".gz"], type="filepath")
             validate_btn = gr.Button("Validate", variant="primary")
             status = gr.Markdown()
             report_dl = gr.DownloadButton("Download validation report (JSON)", visible=False)
@@ -431,8 +422,7 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
     z_validate.click(on_validate_zip, inputs=[z_team, z_track, z_llm, z_retr, z_system, z_email, z_replace, z_file],
                      outputs=[z_status, z_report_dl, z_unused, z_submit, z_state])
     z_submit.click(on_submit_zip, inputs=[z_state], outputs=[z_result, z_receipt_dl, z_unused, z_submit, z_state])
-    track.change(on_track_change, inputs=[track], outputs=[language])
-    validate_btn.click(on_validate, inputs=[team_name, track, language, llm, retriever, system_type, email, upload],
+    validate_btn.click(on_validate, inputs=[team_name, track, llm, retriever, system_type, email, upload],
                        outputs=[status, report_dl, slot_md, replace_radio, submit_btn, state])
     submit_btn.click(on_submit, inputs=[state, replace_radio],
                      outputs=[receipt_md, receipt_dl, slot_md, submit_btn, replace_radio, state])
