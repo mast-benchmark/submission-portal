@@ -187,7 +187,7 @@ class SlotService:
         if replace_oldest:
             n = min(used, key=lambda k: used[k].get("uploaded_at", ""))
             return PlanItem(lang, "replace", n, used[n])
-        return PlanItem(lang, "skipped_full", note=f"all {self.max_slots} slots are filled; use the single-language form to replace one")
+        return PlanItem(lang, "skipped_full", note=f"all {self.max_slots} slots are filled; tick 'replace the oldest run' to replace one")
 
     def plan(self, manifests: dict[str, dict[str, Any]], items: dict[str, Prepared], *,
              replace_oldest: bool = False) -> list[PlanItem]:

@@ -49,5 +49,5 @@ manifests/{track}/{lang}/{team_slug}.json             slot -> metadata
 rejected/{ts}-{hash}.json                             team names that matched nothing
 ```
 
-Each submission is one atomic commit (blob + receipt + manifest) with a compare-and-swap on the
-manifest's parent revision, retried from fresh state on conflict.
+Each upload (one file or a zip of per-language files) is one atomic commit (blobs + receipts + manifests)
+with a compare-and-swap on the repository revision, retried from fresh state on conflict.
