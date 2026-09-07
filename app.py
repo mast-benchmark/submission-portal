@@ -128,6 +128,9 @@ def on_validate(team_name, track, lang, llm, retriever, system_type, email, file
         return fail("The contact email does not look like an email address.")
     if lang not in TRACKS[track]:
         return fail(f"'{lang}' is not a language of the {track} track.")
+    if system_type == "Retrieval-only":
+        return fail("**Retrieval-only submissions are not supported yet.** The submission format for retrieval-only "
+                    f"runs is still being defined; watch the mailing list or email {ORGANIZER_EMAIL}. Nothing was recorded.")
 
     m = roster.match(team_name)
     if not m.team:
