@@ -41,7 +41,8 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def lang_choices(track: Optional[str]) -> list[tuple[str, str]]:
-    return [(display_name(code), code) for code in TRACKS.get(track or "", ())]
+    codes = TRACKS.get(track or "") or sorted({c for langs in TRACKS.values() for c in langs})
+    return [(display_name(code), code) for code in codes]
 
 
 def deadline_text() -> str:
@@ -241,7 +242,7 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
         with gr.Column(scale=1):
             team_name = gr.Textbox(label="Team name", placeholder="exactly as on the registration form")
             track = gr.Radio(choices=[(v, k) for k, v in TRACK_LABELS.items()], label="Track", value=None)
-            language = gr.Dropdown(choices=[], label="Language", value=None)
+            language = gr.Dropdown(choices=lang_choices(None), label="Language", value=None)  # all 21 until a track narrows it
             system_type = gr.Radio(choices=SYSTEM_TYPES, label="System type", value=None)
         with gr.Column(scale=1):
             llm = gr.Textbox(label="LLM", placeholder="e.g. Alibaba-NLP/Tongyi-DeepResearch-30B-A3B")
