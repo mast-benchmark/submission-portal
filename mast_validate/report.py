@@ -47,6 +47,7 @@ KINDS: dict[str, tuple[Level, Callable[[int, dict], str]]] = {
     "qid.duplicate": (Level.ERROR, lambda n, d: f"{_p(n, 'query_id')} duplicated within the file"),
     "coverage.missing": (Level.ERROR, lambda n, d: f"coverage: {_p(n, 'official query_id')} missing (found {d.get('found')} of {d.get('expected')})"),
     "docid.bad_entry": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} with a docid that is not a non-empty string"),
+    "meta.inconsistent": (Level.ERROR, lambda n, d: f"{n} distinct '{d.get('field')}' values in the file; every record must carry the same {d.get('field')}"),
     # ---- warnings ----
     "docid.unknown": (Level.WARNING, lambda n, d: f"{_p(n, 'distinct docid')} ({d.get('pct')}) not in the corpus"),
     "docid.unknown_majority": (Level.WARNING, lambda n, d: f"{_p(n, 'distinct docid')} ({d.get('pct')}) not in the MAST corpus; this looks like a different corpus was indexed"),
@@ -102,6 +103,8 @@ class FileReport:
     records: int = 0
     findings: list[Finding] = field(default_factory=list)
     inferred: bool = False   # language inferred from the records rather than declared
+    llm: Optional[str] = None        # most common 'llm' value in the file
+    retriever: Optional[str] = None  # most common 'retriever' value in the file
 
     def add(self, kind: str, count: int = 1, examples=(), lines=(), **details: Any) -> Finding:
         f = Finding.make(kind, count, examples, lines, **details)
@@ -122,7 +125,7 @@ class FileReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name, "track": self.track, "language": self.language, "inferred": self.inferred,
-            "present": self.present,
+            "llm": self.llm, "retriever": self.retriever, "present": self.present,
             "records": self.records, "errors": len(self.errors), "warnings": len(self.warnings),
             "findings": [f.to_dict() for f in sort_findings(self.findings)],
         }

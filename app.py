@@ -59,7 +59,8 @@ HEADER = f"""
 # MAST @ FIRE 2026 · Run submission
 
 Up to **3 runs per language per team**. Upload either **one `.jsonl` per language** or **one zip per track**
-holding one `.jsonl` file per language (any filenames; the records' `language` field decides). Every file is
+holding one `.jsonl` file per language (any filenames; the records' `language`, `llm` and `retriever` fields say
+what the run is). Every file is
 checked against the official query ids and the corpus before it is stored; a file with errors is never recorded.
 Deadline: **{deadline_text()}**.
 
@@ -84,28 +85,24 @@ def _upload_path(file) -> Optional[str]:
     return path if path and os.path.isfile(path) else None
 
 
-def _common_checks(team_name, track, llm, retriever, system_type, email, file, *, lang=None, need_lang=False):
+def _common_checks(team_name, track, system_type, email, file):
     """Shared preamble. Returns (error_message or None, team, path)."""
     if settings.is_closed():
         return closed_message(), None, None
-    fields = [("team name", team_name), ("track", track), ("LLM", llm), ("retriever", retriever),
-              ("system type", system_type), ("contact email", email), ("file", file)]
-    if need_lang:
-        fields.insert(2, ("language", lang))
+    fields = [("team name", team_name), ("track", track), ("system type", system_type),
+              ("contact email", email), ("file", file)]
     missing = [label for label, v in fields if not v or (isinstance(v, str) and not v.strip())]
     if missing:
         return f"Please fill in: {', '.join(missing)}.", None, None
     if not EMAIL_RE.match(email.strip()):
         return "The contact email does not look like an email address.", None, None
-    if need_lang and lang not in TRACKS[track]:
-        return f"'{lang}' is not a language of the {track} track.", None, None
     if system_type == "Retrieval-only":
         return ("**Retrieval-only submissions are not supported yet.** The submission format for retrieval-only "
                 f"runs is still being defined; watch the mailing list or email {ORGANIZER_EMAIL}. Nothing was recorded.",
                 None, None)
     m = roster.match(team_name)
     if not m.team:
-        slots.log_rejected_name(team_name, track, lang)
+        slots.log_rejected_name(team_name, track, None)
         hint = f" Did you mean **{m.suggestion}**?" if m.suggestion else ""
         return (f"No registered team matches **{team_name.strip()}**.{hint} Team names must match the "
                 f"registration form. If you registered under another spelling, email {ORGANIZER_EMAIL}.", None, None)
@@ -147,13 +144,13 @@ def slot_panel(key: SlotKey, team: Team, manifest: dict[str, Any]) -> str:
             f"{manifest.get('uploads', 0)} / {settings.max_uploads_per_key}")
 
 
-def on_validate(team_name, track, llm, retriever, system_type, email, file):
+def on_validate(team_name, track, system_type, email, file):
     """Validate one file; its language comes from the records. On success show the slot panel."""
     def fail(msg: str, report_path: Optional[str] = None):
         return (msg, gr.update(value=report_path, visible=report_path is not None), gr.update(value="", visible=False),
                 gr.update(visible=False, choices=[], value=None), gr.update(visible=False), None)
 
-    err, team, path = _common_checks(team_name, track, llm, retriever, system_type, email, file)
+    err, team, path = _common_checks(team_name, track, system_type, email, file)
     if err:
         return fail(err)
     original = os.path.basename(path)
@@ -176,7 +173,8 @@ def on_validate(team_name, track, llm, retriever, system_type, email, file):
     manifest, _ = slots.manifest(key, team.name)
     free = slots.next_free_slot(manifest)
     head = ("### ✓ Validation passed" + (" with warnings" if report.n_warnings else "")
-            + f" — team **{team.name}**, language **{display_name(lang)}** (read from the records)\nReview the slots below, then submit.")
+            + f" — team **{team.name}**\nRead from the records: language **{display_name(lang)}**, LLM **{report.files[0].llm}**, "
+            f"retriever **{report.files[0].retriever}**.\nReview the slots below, then submit.")
     if free is not None:
         submit = gr.update(visible=True, value=f"Submit to slot {free}")
         replace = gr.update(visible=False, choices=[], value=None)
@@ -188,7 +186,7 @@ def on_validate(team_name, track, llm, retriever, system_type, email, file):
         replace = gr.update(visible=True, choices=choices, value=None,
                             label="All 3 slots are filled. Choose which run to replace (its receipt is kept):")
     state = {"team": team, "track": track, "lang": lang, "prepared": prepared, "full": free is None,
-             "meta": Meta(llm=llm.strip(), retriever=retriever.strip(), system_type=system_type, submitter_email=email.strip())}
+             "meta": Meta(system_type=system_type, submitter_email=email.strip())}
     return (f"{head}\n\n```text\n{text}```{note}", gr.update(value=report_path, visible=True),
             gr.update(value=slot_panel(key, team, manifest), visible=True), replace, submit, state)
 
@@ -248,24 +246,25 @@ def _verdict(fr: dict[str, Any]) -> str:
 
 
 def _plan_table(files: list[dict[str, Any]], actions: dict[str, str]) -> str:
-    rows = ["| Language | File | Records | Validation | Action |", "|---|---|---|---|---|"]
+    rows = ["| Language | File | Records | LLM · retriever | Validation | Action |", "|---|---|---|---|---|---|"]
     for fr in files:
         lang = fr["language"] or "?"
         name = "" if not fr["present"] else f"`{fr['name']}`"
         action = actions.get(lang, "—" if not fr["present"] else "not recorded (errors)")
         if not fr["present"]:
             action = "— (no file in the zip)"
-        rows.append(f"| {display_name(lang) if fr['language'] else '?'} | {name} | {fr['records'] if fr['present'] else ''} | {_verdict(fr)} | {action} |")
+        meta = f"{fr.get('llm') or ''} · {fr.get('retriever') or ''}" if fr["present"] else ""
+        rows.append(f"| {display_name(lang) if fr['language'] else '?'} | {name} | {fr['records'] if fr['present'] else ''} | {meta} | {_verdict(fr)} | {action} |")
     return "\n".join(rows)
 
 
-def on_validate_zip(team_name, track, llm, retriever, system_type, email, replace_oldest, file):
+def on_validate_zip(team_name, track, system_type, email, replace_oldest, file):
     """Validate every member of a track zip and show what would be recorded where."""
     def fail(msg: str, report_path: Optional[str] = None):
         return (msg, gr.update(value=report_path, visible=report_path is not None), gr.update(value="", visible=False),
                 gr.update(visible=False), None)
 
-    err, team, path = _common_checks(team_name, track, llm, retriever, system_type, email, file)
+    err, team, path = _common_checks(team_name, track, system_type, email, file)
     if err:
         return fail(err)
     if not is_zip(path):
@@ -305,7 +304,7 @@ def on_validate_zip(team_name, track, llm, retriever, system_type, email, replac
         why = "Nothing to record: " + ("no member passed validation." if not items else "every clean language is unchanged, skipped or capped.")
         return fail(head + why + f"\n\n<details><summary>Full validator output</summary>\n\n```text\n{text}```\n</details>{note}", report_path)
     state = {"team": team, "track": track, "items": items, "replace_oldest": bool(replace_oldest),
-             "meta": Meta(llm=llm.strip(), retriever=retriever.strip(), system_type=system_type, submitter_email=email.strip())}
+             "meta": Meta(system_type=system_type, submitter_email=email.strip())}
     md = head + (f"Languages with errors are **not** recorded; fix them and upload the zip again (unchanged languages are skipped automatically).\n\n"
                  if any(fr["present"] and fr["errors"] for fr in rd["files"]) else "") + \
         f"<details><summary>Full validator output</summary>\n\n```text\n{text}```\n</details>{note}"
@@ -340,8 +339,8 @@ def on_submit_zip(state):
                "unchanged": "unchanged", "skipped_full": "skipped: full", "capped": "not recorded: cap"}[i["action"]]
         rows.append(f"| {display_name(i['language'])} | {res} | {i['slot'] or ''} | `{i['receipt_id'] or ''}` | `{(i['sha256'] or '')[:12]}` |")
     body = (f"MAST 2026 zip upload receipt\n\nTeam: {team.name}\nTrack: {track}\nBulk receipt id: {summary['bulk_receipt_id']}\n"
-            f"Uploaded at: {summary['uploaded_at']}\nLLM: {summary['llm']}\nRetriever: {summary['retriever']}\n\n"
-            + "\n".join(f"{i['language']}: {i['action']}" + (f" slot {i['slot']} receipt {i['receipt_id']} sha256 {i['sha256']}" if i['receipt_id'] else f" ({i['note']})")
+            f"Uploaded at: {summary['uploaded_at']}\n\n"
+            + "\n".join(f"{i['language']}: {i['action']}" + (f" slot {i['slot']} receipt {i['receipt_id']} sha256 {i['sha256']} llm {i['llm']} retriever {i['retriever']}" if i['receipt_id'] else f" ({i['note']})")
                         for i in summary["items"]) + "\n")
     mailed = send_receipt(settings, [state["meta"].submitter_email, *team.notify_emails],
                           f"[MAST 2026] zip receipt {summary['bulk_receipt_id']} · {team.name} · {track}", body)
@@ -382,8 +381,6 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
                     z_system = gr.Radio(choices=SYSTEM_TYPES, label="System type", value=None)
                     z_replace = gr.Checkbox(label="Replace the oldest run for languages whose 3 slots are already full", value=False)
                 with gr.Column():
-                    z_llm = gr.Textbox(label="LLM", placeholder="e.g. Alibaba-NLP/Tongyi-DeepResearch-30B-A3B")
-                    z_retr = gr.Textbox(label="Retriever", placeholder="e.g. Qwen/Qwen3-Embedding-8B or BM25")
                     z_email = gr.Textbox(label="Contact email", placeholder="receipt goes here and to the team contact")
                     z_file = gr.File(label="Track zip", file_types=[".zip"], type="filepath")
             z_validate = gr.Button("Validate zip", variant="primary")
@@ -401,8 +398,6 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
                     track = gr.Radio(choices=[(v, k) for k, v in TRACK_LABELS.items()], label="Track", value=None)
                     system_type = gr.Radio(choices=SYSTEM_TYPES, label="System type", value=None)
                 with gr.Column():
-                    llm = gr.Textbox(label="LLM", placeholder="e.g. Alibaba-NLP/Tongyi-DeepResearch-30B-A3B")
-                    retriever = gr.Textbox(label="Retriever", placeholder="e.g. Qwen/Qwen3-Embedding-8B or BM25")
                     email = gr.Textbox(label="Contact email", placeholder="receipt goes here and to the team contact")
                     upload = gr.File(label="Run file (.jsonl or .jsonl.gz, one language; the records say which)", file_types=[".jsonl", ".gz"], type="filepath")
             validate_btn = gr.Button("Validate", variant="primary")
@@ -419,10 +414,10 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
     gr.Markdown("<small>Registration closes with the run deadline. The team roster refreshes within a minute of an update.</small>")
 
     demo.load(on_load, outputs=[closed_banner])
-    z_validate.click(on_validate_zip, inputs=[z_team, z_track, z_llm, z_retr, z_system, z_email, z_replace, z_file],
+    z_validate.click(on_validate_zip, inputs=[z_team, z_track, z_system, z_email, z_replace, z_file],
                      outputs=[z_status, z_report_dl, z_unused, z_submit, z_state])
     z_submit.click(on_submit_zip, inputs=[z_state], outputs=[z_result, z_receipt_dl, z_unused, z_submit, z_state])
-    validate_btn.click(on_validate, inputs=[team_name, track, llm, retriever, system_type, email, upload],
+    validate_btn.click(on_validate, inputs=[team_name, track, system_type, email, upload],
                        outputs=[status, report_dl, slot_md, replace_radio, submit_btn, state])
     submit_btn.click(on_submit, inputs=[state, replace_radio],
                      outputs=[receipt_md, receipt_dl, slot_md, submit_btn, replace_radio, state])

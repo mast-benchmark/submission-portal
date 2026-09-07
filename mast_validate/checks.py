@@ -5,6 +5,7 @@ and produces a :class:`FileReport` at the end.
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -43,6 +44,7 @@ class FileState:
         self.all_docids: set[str] = set()
         self.unknown_keys: set[str] = set()
         self.reconstructed = 0
+        self.meta: dict[str, Counter] = {"llm": Counter(), "retriever": Counter()}
         self.official = resources.qids(track, lang)
         self._docids = resources.docids()
 
@@ -57,6 +59,11 @@ class FileState:
         if rr.reconstructed:
             self.reconstructed += 1
         self.unknown_keys |= rr.unknown_keys
+        if isinstance(obj, dict):
+            for key, counter in self.meta.items():
+                v = obj.get(key)
+                if isinstance(v, str) and v.strip():
+                    counter[v.strip()] += 1
         if rr.qid is not None:
             if rr.qid in self.first_line:
                 self.dups.setdefault(rr.qid, [self.first_line[rr.qid]]).append(line_no)
@@ -73,6 +80,13 @@ class FileState:
 
     def finish(self) -> FileReport:
         fr = FileReport(self.name, self.track, self.lang, records=self.records)
+        for key, counter in self.meta.items():
+            if counter:
+                chosen = counter.most_common(1)[0][0]
+                setattr(fr, key, chosen)
+                if len(counter) > 1:
+                    fr.add("meta.inconsistent", len(counter), [f"{v!r} x{c}" for v, c in counter.most_common(self.cap)],
+                           field=key, chosen=chosen)
         for qid, lines in self.dups.items():
             self.note("qid.duplicate", None, f"{qid} (lines {', '.join(map(str, lines))})")
         found = set(self.first_line)

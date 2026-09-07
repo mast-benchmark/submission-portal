@@ -6,11 +6,11 @@ import pytest
 from portal.slots import Meta, SlotError, SlotKey, SlotService, prepare
 from portal.storage import Conflict, LocalStorage
 
-META = Meta(llm="llm-a", retriever="bm25", system_type="Agentic", submitter_email="a@x.org")
+META = Meta(system_type="Agentic", submitter_email="a@x.org")
 
 
 def report(warnings=0, records=50):
-    fr = {"records": records, "warnings": warnings, "errors": 0,
+    fr = {"records": records, "warnings": warnings, "errors": 0, "llm": "llm-a", "retriever": "bm25",
           "findings": [{"kind": "docid.unknown", "level": "warning"}] * warnings}
     return {"validator": {"name": "mast-validate", "version": "0.1.0"}, "status": "ok", "files": [fr]}
 
@@ -26,6 +26,7 @@ def test_prepare_normalizes_to_gzip_and_hashes_content(tmp_path):
     b = prepared(tmp_path, b'{"a":1}\n', gz=True, name="hi.jsonl.gz")
     assert a.content_sha256 == b.content_sha256 and a.stored_sha256 == b.stored_sha256
     assert gzip.decompress(a.gz_bytes) == b'{"a":1}\n' and a.size_bytes == 8
+    assert a.llm == "llm-a" and a.retriever == "bm25"
 
 
 def test_fill_replace_dedupe_and_cap(tmp_path):
@@ -47,6 +48,7 @@ def test_fill_replace_dedupe_and_cap(tmp_path):
         SlotService(st, max_slots=4).submit(key, "Waterloo NLP", prepared(tmp_path, b"run4\n"), META, replace_slot=4)
     r4 = svc.submit(key, "Waterloo NLP", prepared(tmp_path, b"run4\n", warnings=2), META, replace_slot=2)
     assert r4["slot"] == 2 and r4["replaced"]["receipt_id"] == r2["receipt_id"] and r4["warnings"] == 2
+    assert r4["llm"] == "llm-a" and r4["retriever"] == "bm25"
     assert gzip.decompress(st.read(f"{key.slot_dir(2)}/run.jsonl.gz")) == b"run4\n"
     receipts = st.list_files(f"receipts/indic/hi/waterloo-nlp")
     assert len(receipts) == 4  # the replaced upload's receipt survives

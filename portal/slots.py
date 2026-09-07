@@ -53,6 +53,8 @@ class Prepared:
     warnings: int
     warning_kinds: list[str]
     report: dict[str, Any]
+    llm: str = ""            # read from the records by the validator
+    retriever: str = ""
 
 
 def prepare_bytes(raw: bytes, original_filename: str, report: dict[str, Any]) -> Prepared:
@@ -71,6 +73,8 @@ def prepare_bytes(raw: bytes, original_filename: str, report: dict[str, Any]) ->
         warnings=fr.get("warnings", 0),
         warning_kinds=kinds,
         report=report,
+        llm=fr.get("llm") or "",
+        retriever=fr.get("retriever") or "",
     )
 
 
@@ -80,8 +84,7 @@ def prepare(path: Path, original_filename: str, report: dict[str, Any]) -> Prepa
 
 @dataclass
 class Meta:
-    llm: str
-    retriever: str
+    """What the form adds on top of the file: the file itself says llm, retriever and language."""
     system_type: str
     submitter_email: str
 
@@ -210,7 +213,7 @@ class SlotService:
             "sha256": prepared.stored_sha256, "content_sha256": prepared.content_sha256,
             "size_bytes": prepared.size_bytes, "records": prepared.records,
             "uploaded_at": now.isoformat(), "original_filename": prepared.original_filename,
-            "llm": meta.llm, "retriever": meta.retriever, "system_type": meta.system_type,
+            "llm": prepared.llm, "retriever": prepared.retriever, "system_type": meta.system_type,
             "submitter_email": meta.submitter_email,
             "warnings": prepared.warnings, "warning_kinds": prepared.warning_kinds,
             "replaced": {"receipt_id": old.get("receipt_id"), "sha256": old.get("sha256")} if old else None,
@@ -274,9 +277,9 @@ class SlotService:
             bulk_id = f"{ts_compact(now)}-{digest[:8]}"
             summary = {
                 "bulk_receipt_id": bulk_id, "team": team_name, "team_slug": team_slug, "track": track,
-                "uploaded_at": now.isoformat(), "llm": meta.llm, "retriever": meta.retriever,
-                "system_type": meta.system_type, "submitter_email": meta.submitter_email,
+                "uploaded_at": now.isoformat(), "system_type": meta.system_type, "submitter_email": meta.submitter_email,
                 "items": [{"language": it.lang, "action": it.action, "slot": it.slot, "note": it.note,
+                           "llm": items[it.lang].llm, "retriever": items[it.lang].retriever,
                            "receipt_id": receipts.get(it.lang, {}).get("receipt_id"),
                            "sha256": receipts.get(it.lang, {}).get("sha256"),
                            "replaced": receipts.get(it.lang, {}).get("replaced")} for it in plan],
