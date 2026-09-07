@@ -168,7 +168,8 @@ class HfStorage:
         operations = []
         for op in ops:
             if isinstance(op, Add):
-                operations.append(CommitOperationAdd(path_in_repo=op.path, path_or_fileobj=_to_bytes(op.content)))
+                src = str(op.content) if isinstance(op.content, Path) else _to_bytes(op.content)
+                operations.append(CommitOperationAdd(path_in_repo=op.path, path_or_fileobj=src))
             else:
                 if self.exists(op.path):
                     operations.append(CommitOperationDelete(path_in_repo=op.path))

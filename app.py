@@ -14,7 +14,6 @@ import logging
 import os
 import re
 import tarfile
-import tempfile
 import zipfile
 from typing import Any, Optional
 
@@ -26,8 +25,10 @@ from mast_validate.report import render
 from mast_validate.runner import UsageProblem, archive_kind, single_file_report, validate_archive
 from portal.config import FIRE_URL, ORGANIZER_EMAIL, SITE_URL, Settings
 from portal.mailer import send_receipt
+from portal import tmpfiles
+from portal.rejected import RejectedLog
 from portal.roster import Roster, Team
-from portal.slots import Meta, SlotError, SlotService, prepare_bytes
+from portal.slots import Meta, Prepared, SlotError, SlotService, prepare_stream
 from portal.storage import make_storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -38,6 +39,7 @@ storage = make_storage(settings)
 roster = Roster(storage, settings.roster_ttl_seconds)
 slots = SlotService(storage, max_slots=settings.max_slots, max_uploads=settings.max_uploads_per_key,
                     attempts=settings.commit_attempts)
+rejected = RejectedLog(storage)
 
 TRACK_LABELS = {"multilingual": "MAST Multilingual (15 languages)", "indic": "MAST Indic (9 languages)"}
 SYSTEM_TYPES = ["Agentic", "Retrieval-only"]
@@ -65,8 +67,8 @@ each run is. Every file is checked against the official query ids and the corpus
 errors is never recorded.
 Deadline: **{deadline_text()}**.
 
-Check files offline first with [`mast-validate`]({SITE_URL}#submission-format) (same checks, same output).
-Format spec: [{SITE_URL}#submission-format]({SITE_URL}#submission-format).
+Check files offline first with the `mast-validate` command-line tool from the track announcement (same checks,
+same output). Format spec: [{SITE_URL}#submission-format]({SITE_URL}#submission-format).
 
 > **Working notes are not submitted here.** Each team submits one working note per track (ACM format,
 > 2–4 pages) centrally through the [FIRE 2026]({FIRE_URL}) submission system, as announced by FIRE.
@@ -75,10 +77,9 @@ Format spec: [{SITE_URL}#submission-format]({SITE_URL}#submission-format).
 
 
 def _tmp_json(prefix: str, payload: dict[str, Any]) -> str:
-    fh = tempfile.NamedTemporaryFile("w", delete=False, suffix=".json", prefix=prefix, encoding="utf-8")
-    json.dump(payload, fh, indent=2, ensure_ascii=False)
-    fh.close()
-    return fh.name
+    path = tmpfiles.new_path(prefix, ".json")
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return str(path)
 
 
 def _upload_path(file) -> Optional[str]:
@@ -103,7 +104,7 @@ def _common_checks(team_name, track, system_type, email, file):
                 None, None)
     m = roster.match(team_name)
     if not m.team:
-        slots.log_rejected_name(team_name, track, None)
+        rejected.add(team_name, track)
         hint = f" Did you mean **{m.suggestion}**?" if m.suggestion else ""
         return (f"No registered team matches **{team_name.strip()}**.{hint} Team names must match the "
                 f"registration form. If you registered under another spelling, email {ORGANIZER_EMAIL}.", None, None)
@@ -151,29 +152,46 @@ def _plan_table(files: list[dict[str, Any]], actions: dict[str, str]) -> str:
     return "\n".join(rows)
 
 
-def _read_members(path: str, report) -> dict[str, "bytes"]:
-    """Raw bytes of every clean member (or of the single file), keyed by language."""
-    out: dict[str, bytes] = {}
+def _prepare_members(path: str, report, rd: dict[str, Any], track: str) -> tuple[dict[str, Prepared], dict[str, str]]:
+    """Stream every clean member (or the single file) into a temp gzip. Returns (prepared by language, failures)."""
+    items: dict[str, Prepared] = {}
+    failed: dict[str, str] = {}
+    clean = [fr for fr in report.files if fr.present and fr.language and not fr.errors]
+
+    def sub(fr):
+        return {"validator": rd["validator"], "generated_at": rd["generated_at"], "track": track, "source": fr.name,
+                "status": "warnings" if fr.warnings else "ok", "files": [fr.to_dict()]}
+
+    def one(fr, opener):
+        try:
+            with opener() as fh:
+                items[fr.language] = prepare_stream(fh, fr.name, sub(fr))
+        except Exception as exc:  # a member that validated but cannot be re-read (truncated archive, I/O error)
+            failed[fr.language] = f"{type(exc).__name__}: {exc}"
+            log.warning("member %s unreadable on second pass: %s", fr.name, exc)
+
     kind = archive_kind(path)
-    if kind == "zip":
-        with zipfile.ZipFile(path) as zf:
-            for fr in report.files:
-                if fr.present and fr.language and not fr.errors:
-                    out[fr.language] = zf.read(fr.name)
-    elif kind == "tar":
-        with tarfile.open(path, "r:*") as tf:
-            for fr in report.files:
-                if fr.present and fr.language and not fr.errors:
-                    fh = tf.extractfile(fr.name)
-                    if fh is not None:
-                        with fh:
-                            out[fr.language] = fh.read()
-    else:
-        fr = report.files[0]
-        if fr.present and fr.language and not fr.errors:
-            with open(path, "rb") as fh:
-                out[fr.language] = fh.read()
-    return out
+    try:
+        if kind == "zip":
+            with zipfile.ZipFile(path) as zf:
+                for fr in clean:
+                    one(fr, lambda fr=fr: zf.open(fr.name))
+        elif kind == "tar":
+            with tarfile.open(path, "r:*") as tf:
+                for fr in clean:
+                    def opener(fr=fr):
+                        fh = tf.extractfile(fr.name)
+                        if fh is None:
+                            raise OSError("not a regular file")
+                        return fh
+                    one(fr, opener)
+        else:
+            for fr in clean:
+                one(fr, lambda: open(path, "rb"))
+    except Exception as exc:
+        for fr in clean:
+            failed.setdefault(fr.language, f"{type(exc).__name__}: {exc}")
+    return items, failed
 
 
 def on_validate(team_name, track, system_type, email, replace_oldest, file):
@@ -181,6 +199,7 @@ def on_validate(team_name, track, system_type, email, replace_oldest, file):
     def fail(msg: str, report_path: Optional[str] = None):
         return msg, gr.update(value=report_path, visible=report_path is not None), gr.update(visible=False), None
 
+    tmpfiles.sweep()
     err, team, path = _common_checks(team_name, track, system_type, email, file)
     if err:
         return fail(err)
@@ -197,16 +216,10 @@ def on_validate(team_name, track, system_type, email, replace_oldest, file):
     rd = report.to_dict()
     report_path = _tmp_json(f"mast-report-{track}-", rd)
     text = render(report, color=False, unicode=True)
-    by_name = {fr.name: fr for fr in report.files}
-    items = {}
-    for lang, raw in _read_members(path, report).items():
-        fr = next(f for f in report.files if f.language == lang and f.present and not f.errors)
-        sub = {"validator": rd["validator"], "generated_at": rd["generated_at"], "track": track, "source": fr.name,
-               "status": "warnings" if fr.warnings else "ok", "files": [fr.to_dict()]}
-        items[lang] = prepare_bytes(raw, fr.name, sub)
+    items, unreadable = _prepare_members(path, report, rd, track)
     manifests, _ = slots.manifests(track, team.slug, team.name, sorted(items)) if items else ({}, "")
     plan = slots.plan(manifests, items, replace_oldest=bool(replace_oldest)) if items else []
-    actions = {}
+    actions = {lang: f"not recorded (unreadable: {why[:60]})" for lang, why in unreadable.items()}
     for it in plan:
         old = it.replaced or {}
         actions[it.lang] = ACTION_TEXT[it.action].format(
@@ -220,6 +233,7 @@ def on_validate(team_name, track, system_type, email, replace_oldest, file):
             f"{_coverage_line(track, team)}\n\n{table}\n\n" + (zip_level + "\n\n" if zip_level else ""))
     details = f"<details><summary>Full validator output</summary>\n\n```text\n{text}```\n</details>{_track_note(team, track)}"
     if not writable:
+        tmpfiles.remove(p.gz_path for p in items.values())
         why = "**Nothing to record:** " + ("no file passed validation. Fix the errors and upload again." if not items
                                             else "every clean language is unchanged, skipped (full) or capped.")
         return fail(head + why + "\n\n" + details, report_path)
@@ -249,6 +263,12 @@ def on_submit(state):
         return (f"**Not recorded:** the storage backend failed ({type(exc).__name__}). Nothing was saved; "
                 f"please retry in a minute or email {ORGANIZER_EMAIL}.", gr.update(visible=False), gr.update(), state)
     written = [i for i in summary["items"] if i["action"] in ("slot", "replace")]
+    tmpfiles.remove(p.gz_path for p in state["items"].values())
+    if not summary.get("stored") or not written:
+        log.info("nothing recorded team=%s track=%s (state changed between validate and record)", team.slug, track)
+        return ("**Nothing was recorded.** The slots changed between *Validate* and *Record* (every language is now "
+                "unchanged, full or capped). Validate again to see the current state.",
+                gr.update(visible=False), gr.update(visible=False), None)
     log.info("recorded team=%s track=%s langs=%s receipt=%s", team.slug, track, [i["language"] for i in written],
              summary["bulk_receipt_id"])
     receipt_path = _tmp_json(f"mast-receipt-{summary['bulk_receipt_id']}-", summary)
@@ -263,7 +283,7 @@ def on_submit(state):
                                                               if i['receipt_id'] else f" ({i['note']})") for i in summary["items"]) + "\n")
     mailed = send_receipt(settings, [summary["submitter_email"], *team.notify_emails],
                           f"[MAST 2026] receipt {summary['bulk_receipt_id']} · {team.name} · {track}", body)
-    md = (f"### {'✓' if written else '·'} {len(written)} language{'s' if len(written) != 1 else ''} recorded · receipt `{summary['bulk_receipt_id']}`\n\n"
+    md = (f"### ✓ {len(written)} language{'s' if len(written) != 1 else ''} recorded · receipt `{summary['bulk_receipt_id']}`\n\n"
           + "\n".join(rows) + "\n\n" + _coverage_line(track, team) + "\n\n"
           + ("A copy was emailed to the submitter and the team contact.\n" if mailed else
              "Download the receipt below and keep it; it is your proof of submission.\n"))
@@ -278,8 +298,10 @@ RULES = f"""
 * Three slots per (team, track, language). A new run takes the next free slot. When all three are filled the
   language is skipped, unless you tick *replace the oldest run*; a replaced run's receipt is kept, so nothing is
   lost silently.
-* A file's language, LLM and retriever are read from its records; every record must carry the same values.
-  Filenames carry no meaning. An archive (zip or tar) may hold one file per language, named however you like.
+* A file's language, LLM and retriever are read from its records; every record must carry the same values
+  (`llm` and `retriever` are compared exactly, case-sensitive). Filenames carry no meaning. An archive (zip or
+  tar) may hold one file per language, named however you like.
+* Team names are matched ignoring case and punctuation, but word order matters: "Sahel Test" is not "Test Sahel".
 * Every upload gets a receipt id and a sha256 per language. Keep the receipt. Organizers evaluate exactly the
   stored bytes.
 * Errors block a file; warnings do not, but each one costs score. `Exact Answer:` must appear in the final

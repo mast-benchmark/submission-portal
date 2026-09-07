@@ -214,11 +214,11 @@ def _finish_archive(report: Report, track: str, max_examples: int) -> None:
             by_lang.setdefault(fr.language, []).append(fr)
     dups = {code: frs for code, frs in by_lang.items() if len(frs) > 1}
     if dups:
-        report.add("zip.duplicate_language", len(dups),
+        report.add("archive.duplicate_language", len(dups),
                    [f"{code}: {', '.join(fr.name for fr in frs)}" for code, frs in dups.items()][:max_examples])
         for code, frs in dups.items():
             for fr in frs:
-                fr.add("zip.duplicate_language", 1, [f"{code} also in {', '.join(x.name for x in frs if x is not fr)}"])
+                fr.add("archive.duplicate_language", 1, [f"{code} also in {', '.join(x.name for x in frs if x is not fr)}"])
     expected = TRACKS[track]
     present = set(by_lang)
     for code in expected:
@@ -246,9 +246,9 @@ def validate_archive(path: PathLike, *, track: str, strict: bool = False, max_ex
         with zf:
             zs = scan(zf)
             if zs.unsafe:
-                report.add("zip.unsafe_member", len(zs.unsafe), zs.unsafe[:max_examples])
+                report.add("archive.unsafe_member", len(zs.unsafe), zs.unsafe[:max_examples])
             if zs.ignored:
-                report.add("zip.member_ignored", len(zs.ignored), zs.ignored[:max_examples])
+                report.add("archive.member_ignored", len(zs.ignored), zs.ignored[:max_examples])
             for info in zs.members:
                 if info.compress_size > limits.MAX_COMPRESSED_BYTES:
                     fr = FileReport(info.filename, track, None)
@@ -267,9 +267,9 @@ def validate_archive(path: PathLike, *, track: str, strict: bool = False, max_ex
         with tf:
             ts = scan_tar(tf)
             if ts.unsafe:
-                report.add("zip.unsafe_member", len(ts.unsafe), ts.unsafe[:max_examples])
+                report.add("archive.unsafe_member", len(ts.unsafe), ts.unsafe[:max_examples])
             if ts.ignored:
-                report.add("zip.member_ignored", len(ts.ignored), ts.ignored[:max_examples])
+                report.add("archive.member_ignored", len(ts.ignored), ts.ignored[:max_examples])
             for info in ts.members:
                 fh = tf.extractfile(info)
                 if fh is None:

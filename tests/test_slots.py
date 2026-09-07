@@ -25,7 +25,8 @@ def test_prepare_normalizes_to_gzip_and_hashes_content(tmp_path):
     a = prepared(tmp_path, b'{"a":1}\n')
     b = prepared(tmp_path, b'{"a":1}\n', gz=True, name="hi.jsonl.gz")
     assert a.content_sha256 == b.content_sha256 and a.stored_sha256 == b.stored_sha256
-    assert gzip.decompress(a.gz_bytes) == b'{"a":1}\n' and a.size_bytes == 8
+    assert gzip.decompress(a.read_gz()) == b'{"a":1}\n' and a.size_bytes == 8
+    assert a.gz_path.is_file() and a.read_gz() == b.read_gz()  # deterministic bytes on disk
     assert a.llm == "llm-a" and a.retriever == "bm25"
 
 
@@ -87,13 +88,6 @@ def test_conflict_retries_from_fresh_state(tmp_path, monkeypatch):
     assert r["slot"] == 2 and calls["n"] == 2  # re-read saw slot 1 taken
 
 
-def test_rejected_name_logged(tmp_path):
-    st = LocalStorage(tmp_path)
-    SlotService(st).log_rejected_name("Nobody", "indic", "hi")
-    files = st.list_files("rejected")
-    assert len(files) == 1 and json.loads(st.read(files[0]))["name"] == "Nobody"
-
-
 def bulk_items(tmp_path, langs, tag=b"v1", warnings=0):
     return {l: prepared(tmp_path, tag + b" " + l.encode() + b"\n", name=f"{l}.jsonl", warnings=warnings) for l in langs}
 
@@ -138,6 +132,15 @@ def test_submit_many_is_atomic_on_conflict(tmp_path, monkeypatch):
         svc.submit_many("indic", "t", "T", bulk_items(tmp_path, ["bn", "gu"]), META)
     monkeypatch.setattr(st, "commit", real)
     assert calls["n"] == 2 and st.list_files("slots") == []
+
+
+def test_submit_many_nothing_to_write_is_not_stored(tmp_path):
+    st = LocalStorage(tmp_path / "store")
+    svc = SlotService(st)
+    items = bulk_items(tmp_path, ["bn"])
+    assert svc.submit_many("indic", "t", "T", items, META)["stored"] is True
+    again = svc.submit_many("indic", "t", "T", items, META)
+    assert again["stored"] is False and len(st.list_files("receipts/indic/bulk")) == 1
 
 
 def test_manifests_read_at_one_revision(tmp_path):

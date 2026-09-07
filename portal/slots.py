@@ -7,7 +7,7 @@ Layout in storage (spec §8):
     receipts/{track}/{lang}/{team_slug}/{ts}-{sha8}.json  every upload ever, never deleted
     receipts/{track}/bulk/{team_slug}/{ts}-{sha8}.json    one per whole-track zip upload
     manifests/{track}/{lang}/{team_slug}.json             slot -> metadata
-    rejected/{ts}-{hash}.json                             team names that matched nothing
+    rejected/{ts}-{hash}.json                             rejected team names, one file per flush window
 
 A single-language upload and a whole-track zip upload share the same slot
 model; the zip form fills several languages in one atomic commit.
@@ -17,13 +17,15 @@ from __future__ import annotations
 import datetime as dt
 import gzip
 import hashlib
+import io
 import json
 import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional
 
+from . import tmpfiles
 from .storage import Add, Conflict, Storage
 
 GZIP_MAGIC = b"\x1f\x8b"
@@ -43,8 +45,8 @@ class SlotError(Exception):
 
 @dataclass
 class Prepared:
-    """An upload that passed validation and is ready to be committed."""
-    gz_bytes: bytes
+    """An upload that passed validation and is ready to be committed. The gzip lives on disk, not in memory."""
+    gz_path: Path
     content_sha256: str           # sha256 of the decompressed JSONL
     stored_sha256: str            # sha256 of run.jsonl.gz as stored
     size_bytes: int               # decompressed
@@ -56,18 +58,69 @@ class Prepared:
     llm: str = ""            # read from the records by the validator
     retriever: str = ""
 
+    def read_gz(self) -> bytes:
+        return self.gz_path.read_bytes()
 
-def prepare_bytes(raw: bytes, original_filename: str, report: dict[str, Any]) -> Prepared:
-    """Normalize a validated upload to deterministic gzip and hash both forms."""
-    content = gzip.decompress(raw) if raw.startswith(GZIP_MAGIC) else raw
-    buf = gzip.compress(content, compresslevel=6, mtime=0)
+
+class _Prefixed:
+    """Read-only stream that replays already-consumed bytes before the underlying stream."""
+
+    def __init__(self, head: bytes, src: BinaryIO) -> None:
+        self._head, self._src = head, src
+
+    def read(self, n: int = -1) -> bytes:
+        if self._head:
+            if n is None or n < 0:
+                b, self._head = self._head + self._src.read(), b""
+                return b
+            b, self._head = self._head[:n], self._head[n:]
+            if len(b) < n:
+                b += self._src.read(n - len(b))
+            return b
+        return self._src.read(n)
+
+
+class _HashingWriter:
+    def __init__(self, fh: BinaryIO) -> None:
+        self.fh, self.h, self.n = fh, hashlib.sha256(), 0
+
+    def write(self, b: bytes) -> int:
+        self.h.update(b)
+        self.n += len(b)
+        return self.fh.write(b)
+
+    def flush(self) -> None:
+        self.fh.flush()
+
+
+def prepare_stream(src: BinaryIO, original_filename: str, report: dict[str, Any],
+                   gz_path: Optional[Path] = None, chunk: int = 1 << 20) -> Prepared:
+    """Stream a validated upload (plain or gzipped) into a deterministic gzip file, hashing both forms.
+
+    Memory stays at one chunk regardless of file size.
+    """
+    gz_path = gz_path or tmpfiles.new_path("mast-run-", ".jsonl.gz")
+    head = src.read(2)
+    reader = gzip.GzipFile(fileobj=_Prefixed(head, src), mode="rb") if head == GZIP_MAGIC else _Prefixed(head, src)  # type: ignore[arg-type]
+    content_h = hashlib.sha256()
+    size = 0
+    with open(gz_path, "wb") as out:
+        writer = _HashingWriter(out)
+        with gzip.GzipFile(fileobj=writer, mode="wb", compresslevel=6, mtime=0) as gz:  # type: ignore[arg-type]
+            while True:
+                data = reader.read(chunk)
+                if not data:
+                    break
+                content_h.update(data)
+                size += len(data)
+                gz.write(data)
     fr = report["files"][0] if report.get("files") else {}
     kinds = sorted({f["kind"] for f in fr.get("findings", []) if f["level"] == "warning"})
     return Prepared(
-        gz_bytes=buf,
-        content_sha256=hashlib.sha256(content).hexdigest(),
-        stored_sha256=hashlib.sha256(buf).hexdigest(),
-        size_bytes=len(content),
+        gz_path=gz_path,
+        content_sha256=content_h.hexdigest(),
+        stored_sha256=writer.h.hexdigest(),
+        size_bytes=size,
         original_filename=original_filename,
         records=fr.get("records", 0),
         warnings=fr.get("warnings", 0),
@@ -78,8 +131,13 @@ def prepare_bytes(raw: bytes, original_filename: str, report: dict[str, Any]) ->
     )
 
 
+def prepare_bytes(raw: bytes, original_filename: str, report: dict[str, Any]) -> Prepared:
+    return prepare_stream(io.BytesIO(raw), original_filename, report)
+
+
 def prepare(path: Path, original_filename: str, report: dict[str, Any]) -> Prepared:
-    return prepare_bytes(Path(path).read_bytes(), original_filename, report)
+    with open(path, "rb") as fh:
+        return prepare_stream(fh, original_filename, report)
 
 
 @dataclass
@@ -194,16 +252,6 @@ class SlotService:
         return [self.plan_one(manifests[lang], items[lang], replace_oldest=replace_oldest) for lang in sorted(items)]
 
     # ---- writes
-    def log_rejected_name(self, name: str, track: str, lang: Optional[str]) -> None:
-        t = utcnow()
-        slug = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
-        try:
-            self.storage.commit([Add(f"rejected/{ts_compact(t)}-{slug}.json",
-                                     json.dumps({"name": name, "track": track, "language": lang, "at": t.isoformat()}))],
-                                f"rejected team name ({track}/{lang})")
-        except Exception:
-            pass  # never let logging break a submission attempt
-
     def _ops_for(self, key: SlotKey, team_name: str, manifest: dict[str, Any], item: PlanItem,
                  prepared: Prepared, meta: Meta, now: dt.datetime) -> tuple[list[Add], dict[str, Any]]:
         receipt_id = f"{ts_compact(now)}-{prepared.stored_sha256[:8]}"
@@ -225,7 +273,7 @@ class SlotService:
         manifest["updated_at"] = now.isoformat()
         manifest["team"] = team_name
         ops = [
-            Add(f"{key.slot_dir(item.slot)}/run.jsonl.gz", prepared.gz_bytes),
+            Add(f"{key.slot_dir(item.slot)}/run.jsonl.gz", prepared.gz_path),
             Add(f"{key.slot_dir(item.slot)}/receipt.json", json.dumps(receipt, indent=2)),
             Add(key.receipt_path(now, prepared.stored_sha256), json.dumps(receipt, indent=2)),
             Add(key.manifest_path, json.dumps(manifest, indent=2)),
@@ -276,7 +324,7 @@ class SlotService:
             digest = hashlib.sha256("".join(items[l].content_sha256 for l in sorted(items)).encode()).hexdigest()
             bulk_id = f"{ts_compact(now)}-{digest[:8]}"
             summary = {
-                "bulk_receipt_id": bulk_id, "team": team_name, "team_slug": team_slug, "track": track,
+                "bulk_receipt_id": bulk_id, "stored": bool(ops), "team": team_name, "team_slug": team_slug, "track": track,
                 "uploaded_at": now.isoformat(), "system_type": meta.system_type, "submitter_email": meta.submitter_email,
                 "items": [{"language": it.lang, "action": it.action, "slot": it.slot, "note": it.note,
                            "llm": items[it.lang].llm, "retriever": items[it.lang].retriever,

@@ -1,5 +1,7 @@
 """Team roster: ``teams.csv`` in storage, cached ~60 s, matched by normalized name or alias.
 
+Normalization ignores case, punctuation, repeated spaces and a leading "team ";
+word order is significant ("Sahel Test" and "Test Sahel" are different teams).
 The roster is never rendered. A miss yields at most one "did you mean" suggestion.
 """
 from __future__ import annotations
@@ -24,11 +26,6 @@ def normalize_name(name: str) -> str:
     if s.startswith("team "):
         s = s[5:].strip()
     return s
-
-
-def word_key(name: str) -> str:
-    """Order-insensitive form: 'Sahel Test' and 'Test Sahel' share a key."""
-    return " ".join(sorted(normalize_name(name).split()))
 
 
 def slugify(name: str) -> str:
@@ -84,7 +81,6 @@ class Roster:
         self.ttl = ttl_seconds
         self._teams: list[Team] = []
         self._index: dict[str, Team] = {}
-        self._by_words: dict[str, Team] = {}
         self._loaded_at = 0.0
 
     def _refresh(self, force: bool = False) -> None:
@@ -93,21 +89,19 @@ class Roster:
         raw = self.storage.read(ROSTER_PATH)
         teams = parse_roster(raw.decode("utf-8-sig")) if raw else []
         index: dict[str, Team] = {}
-        by_words: dict[str, Team] = {}
         for t in teams:
             for key in [t.name, *t.aliases]:
                 n = normalize_name(key)
                 if n:
                     index.setdefault(n, t)
-                    by_words.setdefault(word_key(key), t)
-        self._teams, self._index, self._by_words, self._loaded_at = teams, index, by_words, time.time()
+        self._teams, self._index, self._loaded_at = teams, index, time.time()
 
     def match(self, name: str) -> Match:
         self._refresh()
         n = normalize_name(name)
         if not n:
             return Match(None)
-        team = self._index.get(n) or self._by_words.get(word_key(name))
+        team = self._index.get(n)
         if team:
             return Match(team)
         close = difflib.get_close_matches(n, list(self._index), n=1, cutoff=0.6)

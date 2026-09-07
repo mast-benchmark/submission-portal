@@ -30,8 +30,8 @@ KINDS: dict[str, tuple[Level, Callable[[int, dict], str]]] = {
     "io.unreadable": (Level.ERROR, lambda n, d: f"file could not be read: {d.get('reason')}"),
     "io.oversize": (Level.ERROR, lambda n, d: f"file too large: {d.get('reason')}"),
     "io.not_jsonl": (Level.ERROR, lambda n, d: f"{d.get('reason')}"),
-    "zip.unsafe_member": (Level.ERROR, lambda n, d: f"{_p(n, 'unsafe zip member')} rejected"),
-    "zip.duplicate_language": (Level.ERROR, lambda n, d: f"{_p(n, 'language')} present in more than one zip member"),
+    "archive.unsafe_member": (Level.ERROR, lambda n, d: f"{_p(n, 'unsafe archive member')} rejected"),
+    "archive.duplicate_language": (Level.ERROR, lambda n, d: f"{_p(n, 'language')} present in more than one archive member"),
     "json.invalid_line": (Level.ERROR, lambda n, d: f"{_p(n, 'line')} not valid JSON"),
     "json.not_object": (Level.ERROR, lambda n, d: f"{_p(n, 'line')} not a JSON object"),
     "schema.missing_field": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} missing a required field"),
@@ -47,7 +47,7 @@ KINDS: dict[str, tuple[Level, Callable[[int, dict], str]]] = {
     "qid.duplicate": (Level.ERROR, lambda n, d: f"{_p(n, 'query_id')} duplicated within the file"),
     "coverage.missing": (Level.ERROR, lambda n, d: f"coverage: {_p(n, 'official query_id')} missing (found {d.get('found')} of {d.get('expected')})"),
     "docid.bad_entry": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} with a docid that is not a non-empty string"),
-    "meta.inconsistent": (Level.ERROR, lambda n, d: f"{n} distinct '{d.get('field')}' values in the file; every record must carry the same {d.get('field')}"),
+    "meta.inconsistent": (Level.ERROR, lambda n, d: f"{n} distinct '{d.get('field')}' values in the file (compared exactly, case-sensitive); every record must carry the same {d.get('field')}"),
     # ---- warnings ----
     "docid.unknown": (Level.WARNING, lambda n, d: f"{_p(n, 'distinct docid')} ({d.get('pct')}) not in the corpus"),
     "docid.unknown_majority": (Level.WARNING, lambda n, d: f"{_p(n, 'distinct docid')} ({d.get('pct')}) not in the MAST corpus; this looks like a different corpus was indexed"),
@@ -58,7 +58,7 @@ KINDS: dict[str, tuple[Level, Callable[[int, dict], str]]] = {
     "rounds.empty": (Level.WARNING, lambda n, d: f"{_p(n, 'record')} with an empty search round"),
     "keys.unknown": (Level.WARNING, lambda n, d: f"unknown top-level {_p(n, 'key')} ignored: {', '.join(d.get('keys', []))}"),
     "track.language_missing": (Level.WARNING, lambda n, d: f"missing (declared track expects {d.get('expected')} languages, found {d.get('found')})"),
-    "zip.member_ignored": (Level.WARNING, lambda n, d: f"{_p(n, 'zip member')} ignored"),
+    "archive.member_ignored": (Level.WARNING, lambda n, d: f"{_p(n, 'archive member')} ignored"),
 }
 
 _ORDER = {k: i for i, k in enumerate(KINDS)}

@@ -59,8 +59,9 @@ def parse_qid(value: Any, lang: str) -> tuple[Optional[str], Optional[Issue], bo
     """Resolve a submitted ``query_id`` against the declared language.
 
     Returns ``(canonical_qid, issue, reconstructed)``. Mode A: ``"zh-798"``
-    (prefix must agree with ``lang``). Mode B: ``798`` or ``"798"``, rebuilt
-    as ``f"{lang}-798"``. Anything else is malformed; nothing is guessed.
+    (the prefix must be exactly the language code). Mode B: ``798`` or
+    ``"798"``, rebuilt as ``f"{lang}-798"``. Anything else is malformed;
+    nothing is guessed.
     """
     if _is_int(value):
         if value < 0:
@@ -77,13 +78,14 @@ def parse_qid(value: Any, lang: str) -> tuple[Optional[str], Optional[Issue], bo
         prefix, _, num = s.rpartition("-")
         if not num.isdigit():
             return None, Issue("qid.malformed", _short(value)), False
+        if prefix == lang:
+            return f"{lang}-{int(num)}", None, False
         code = normalize(prefix)
+        if code == lang:  # right language, wrong spelling: 'HI-798', 'hindi-798'
+            return None, Issue("qid.malformed", f"{_short(value)} (prefix must be exactly '{lang}')"), False
         if code is None:
             return None, Issue("qid.malformed", _short(value)), False
-        canonical = f"{code}-{int(num)}"
-        if code != lang:
-            return None, Issue("qid.prefix_mismatch", f"{_short(value)} in a '{lang}' file"), False
-        return canonical, None, False
+        return None, Issue("qid.prefix_mismatch", f"{_short(value)} in a '{lang}' file"), False
     return None, Issue("qid.malformed", _short(value)), False
 
 
