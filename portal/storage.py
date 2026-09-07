@@ -1,17 +1,15 @@
 """Storage backends with one contract: versioned reads and atomic multi-file commits.
 
-``HfStorage`` writes to a private Hugging Face dataset repo. A commit carries a
-``parent`` revision, so two portal instances racing on the same manifest cannot
-overwrite each other: the loser gets :class:`Conflict` and retries from fresh
-state. ``LocalStorage`` mirrors the contract on a directory for tests and local runs.
+A commit carries the repository revision it was planned against (``parent``);
+if anything was committed in between, the backend raises :class:`Conflict` and
+the caller re-reads and retries. ``HfStorage`` maps this onto Hub commits with
+``parent_commit``; ``LocalStorage`` keeps a revision counter on disk.
 """
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
-import shutil
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -50,13 +48,16 @@ def _to_bytes(content: Content) -> bytes:
 class Storage(Protocol):
     def read(self, path: str) -> Optional[bytes]: ...
     def read_versioned(self, path: str) -> tuple[Optional[bytes], str]: ...
+    def read_many(self, paths: list[str]) -> tuple[dict[str, Optional[bytes]], str]: ...
     def commit(self, ops: list[Op], message: str, parent: Optional[str] = None) -> str: ...
     def list_files(self, prefix: str) -> list[str]: ...
     def exists(self, path: str) -> bool: ...
 
 
 class LocalStorage:
-    """Directory-backed. The revision token is a hash of the manifest content."""
+    """Directory-backed. The revision is a counter bumped by every commit."""
+
+    REV_FILE = ".rev"
 
     def __init__(self, root: Union[str, Path]) -> None:
         self.root = Path(root)
@@ -69,23 +70,27 @@ class LocalStorage:
             raise ValueError(f"path escapes storage root: {path}")
         return p
 
+    def _rev(self) -> str:
+        p = self.root / self.REV_FILE
+        return p.read_text().strip() if p.is_file() else "0"
+
     def read(self, path: str) -> Optional[bytes]:
         p = self._p(path)
         return p.read_bytes() if p.is_file() else None
 
     def read_versioned(self, path: str) -> tuple[Optional[bytes], str]:
-        data = self.read(path)
-        return data, hashlib.sha256(data or b"").hexdigest()
+        with self._lock:
+            return self.read(path), self._rev()
+
+    def read_many(self, paths: list[str]) -> tuple[dict[str, Optional[bytes]], str]:
+        with self._lock:
+            return {p: self.read(p) for p in paths}, self._rev()
 
     def commit(self, ops: list[Op], message: str, parent: Optional[str] = None) -> str:
         with self._lock:
-            if parent is not None:
-                # The parent token belongs to the manifest (the only read-modify-write file in a commit).
-                manifests = [op.path for op in ops if isinstance(op, Add) and op.path.startswith("manifests/")]
-                for mpath in manifests:
-                    _, current = self.read_versioned(mpath)
-                    if current != parent:
-                        raise Conflict(f"{mpath}: parent {parent[:8]} != head {current[:8]}")
+            current = self._rev()
+            if parent is not None and parent != current:
+                raise Conflict(f"parent rev {parent} != head {current}")
             for op in ops:
                 p = self._p(op.path)
                 if isinstance(op, Add):
@@ -100,7 +105,9 @@ class LocalStorage:
                             os.unlink(tmp.name)
                 elif p.is_file():
                     p.unlink()
-            return hashlib.sha256(message.encode() + os.urandom(8)).hexdigest()
+            new = str(int(current) + 1)
+            (self.root / self.REV_FILE).write_text(new)
+            return new
 
     def list_files(self, prefix: str) -> list[str]:
         base = self._p(prefix)
@@ -139,6 +146,21 @@ class HfStorage:
             return None, rev
         return Path(local).read_bytes(), rev
 
+    def read_many(self, paths: list[str]) -> tuple[dict[str, Optional[bytes]], str]:
+        """All paths at one revision, in one snapshot call."""
+        from huggingface_hub import snapshot_download
+
+        rev = self.head()
+        if not paths:
+            return {}, rev
+        local = Path(snapshot_download(self.repo_id, repo_type="dataset", revision=rev, token=self.token,
+                                       allow_patterns=list(paths)))
+        out: dict[str, Optional[bytes]] = {}
+        for p in paths:
+            f = local / p
+            out[p] = f.read_bytes() if f.is_file() else None
+        return out, rev
+
     def commit(self, ops: list[Op], message: str, parent: Optional[str] = None) -> str:
         from huggingface_hub import CommitOperationAdd, CommitOperationDelete
         from huggingface_hub.utils import HfHubHTTPError
@@ -146,8 +168,7 @@ class HfStorage:
         operations = []
         for op in ops:
             if isinstance(op, Add):
-                fileobj = op.content if isinstance(op.content, Path) else io.BytesIO(_to_bytes(op.content))
-                operations.append(CommitOperationAdd(path_in_repo=op.path, path_or_fileobj=fileobj))
+                operations.append(CommitOperationAdd(path_in_repo=op.path, path_or_fileobj=_to_bytes(op.content)))
             else:
                 if self.exists(op.path):
                     operations.append(CommitOperationDelete(path_in_repo=op.path))

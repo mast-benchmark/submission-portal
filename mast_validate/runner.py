@@ -1,7 +1,9 @@
 """Streaming validation of one file, one zip, or whatever path is given.
 
-Everything here reads line by line and never holds a whole decompressed file
-in memory; per-file state lives in :class:`mast_validate.checks.FileState`.
+A file's language is either *declared* by the caller or *inferred* from its
+records: the first records' ``language`` fields decide (majority of the first
+``PEEK_RECORDS``), and every record must then agree, including query-id
+prefixes. Filenames are never used. Everything is read line by line.
 """
 from __future__ import annotations
 
@@ -10,17 +12,19 @@ import io
 import json
 import os
 import zipfile
+from collections import Counter
 from pathlib import Path
-from typing import BinaryIO, Optional, Union
+from typing import BinaryIO, Iterator, Optional, Union
 
 from . import limits, resources
 from .archive import scan
 from .checks import FileState
-from .languages import TRACKS, in_track, language_from_filename, normalize
+from .languages import TRACKS, in_track, normalize
 from .report import FileReport, Report
 
 GZIP_MAGIC = b"\x1f\x8b"
 ZIP_MAGIC = b"PK\x03\x04"
+PEEK_RECORDS = 20
 PathLike = Union[str, "os.PathLike[str]"]
 
 
@@ -48,53 +52,115 @@ def _fmt_bytes(n: int) -> str:
     return f"{n / (1024 * 1024):.0f} MB" if n >= 1024 * 1024 else f"{n} bytes"
 
 
-def validate_stream(binary: BinaryIO, *, track: str, lang: str, name: str,
+def _iter_records(stream: BinaryIO) -> Iterator[tuple[int, object, Optional[str]]]:
+    """Yield (line_no, parsed_object_or_None, error_example_or_None), enforcing size caps."""
+    total = 0
+    for line_no, raw in enumerate(stream, 1):
+        total += len(raw)
+        if total > limits.MAX_DECOMPRESSED_BYTES:
+            raise _Oversize(f"decompressed size exceeds {_fmt_bytes(limits.MAX_DECOMPRESSED_BYTES)}")
+        if len(raw) > limits.MAX_LINE_BYTES:
+            raise _Oversize(f"line {line_no} exceeds {_fmt_bytes(limits.MAX_LINE_BYTES)}")
+        if line_no == 1 and raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        if not raw.strip():
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            yield line_no, None, f"invalid UTF-8 at byte {exc.start}"
+            continue
+        try:
+            yield line_no, json.loads(text), None
+        except json.JSONDecodeError as exc:
+            yield line_no, None, f"{exc.msg} at column {exc.colno}"
+
+
+def infer_language(objs) -> Optional[str]:
+    """Majority of the recognizable ``language`` fields; ties go to the first seen."""
+    counts: Counter = Counter()
+    order: dict[str, int] = {}
+    for obj in objs:
+        if isinstance(obj, dict):
+            code = normalize(obj.get("language"))
+            if code:
+                counts[code] += 1
+                order.setdefault(code, len(order))
+    if not counts:
+        return None
+    return max(counts, key=lambda c: (counts[c], -order[c]))
+
+
+def validate_stream(binary: BinaryIO, *, track: str, lang: Optional[str] = None, name: str,
                     max_examples: int = 10) -> FileReport:
-    """Validate one JSONL (optionally gzipped) stream as the declared (track, lang)."""
-    state = FileState(name, track, lang, max_examples=max_examples)
+    """Validate one JSONL (optionally gzipped) stream. ``lang=None`` infers it from the records."""
     head, binary = _peek(binary, 4)
     if head.startswith(ZIP_MAGIC):
         fr = FileReport(name, track, lang)
         fr.add("io.not_jsonl", reason="this is a zip archive, not a .jsonl file; upload one per-language .jsonl "
-                                      "(the CLI accepts a zip of {lang}.jsonl files, the portal does not)")
+                                      "(the CLI accepts a zip of .jsonl files, the single-file portal form does not)")
         return fr
     stream: BinaryIO = gzip.GzipFile(fileobj=binary) if head.startswith(GZIP_MAGIC) else binary  # type: ignore[assignment]
-    total = 0
+    state: Optional[FileState] = None
+    buffered: list[tuple[int, object, Optional[str]]] = []
+    inferred = lang is None
+    early: Optional[FileReport] = None
+
+    def feed(item: tuple[int, object, Optional[str]]) -> None:
+        line_no, obj, err = item
+        if err is not None:
+            state.note("json.invalid_line", line_no, err)  # type: ignore[union-attr]
+        else:
+            state.add_record(line_no, obj)  # type: ignore[union-attr]
+
+    def decide() -> None:
+        nonlocal state, early
+        code = lang if lang is not None else infer_language(o for _, o, _ in buffered)
+        n_records = sum(1 for _, o, _ in buffered if o is not None)
+        if code is None:
+            early = FileReport(name, track, None, records=n_records, inferred=True)
+            early.add("lang.undetermined")
+            return
+        if not in_track(track, code):
+            early = FileReport(name, track, code, records=n_records, inferred=inferred)
+            early.add("lang.not_in_track", language=code, track=track)
+            return
+        state = FileState(name, track, code, max_examples=max_examples)
+        for item in buffered:
+            feed(item)
+        buffered.clear()
+
     try:
-        for line_no, raw in enumerate(stream, 1):
-            total += len(raw)
-            if total > limits.MAX_DECOMPRESSED_BYTES:
-                raise _Oversize(f"decompressed size exceeds {_fmt_bytes(limits.MAX_DECOMPRESSED_BYTES)}")
-            if len(raw) > limits.MAX_LINE_BYTES:
-                raise _Oversize(f"line {line_no} exceeds {_fmt_bytes(limits.MAX_LINE_BYTES)}")
-            if line_no == 1 and raw.startswith(b"\xef\xbb\xbf"):
-                raw = raw[3:]
-            if not raw.strip():
+        for item in _iter_records(stream):
+            if state is None and early is None:
+                buffered.append(item)
+                if sum(1 for _, o, _ in buffered if o is not None) >= PEEK_RECORDS:
+                    decide()
                 continue
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                state.note("json.invalid_line", line_no, f"invalid UTF-8 at byte {exc.start}")
+            if early is not None:
+                if item[1] is not None:
+                    early.records += 1
                 continue
-            try:
-                obj = json.loads(text)
-            except json.JSONDecodeError as exc:
-                state.note("json.invalid_line", line_no, f"{exc.msg} at column {exc.colno}")
-                continue
-            state.add_record(line_no, obj)
+            feed(item)
+        if state is None and early is None:
+            decide()
     except _Oversize as exc:
-        fr = state.finish()
+        fr = state.finish() if state is not None else FileReport(name, track, lang, inferred=inferred)
         fr.findings = [f for f in fr.findings if f.kind != "coverage.missing"]
         fr.add("io.oversize", reason=str(exc))
         return fr
     except (OSError, EOFError, gzip.BadGzipFile, zipfile.BadZipFile) as exc:
-        fr = FileReport(name, track, lang, records=state.records)
+        fr = FileReport(name, track, lang, inferred=inferred)
         fr.add("io.unreadable", reason=f"{type(exc).__name__}: {exc}")
         return fr
-    return state.finish()
+    if early is not None:
+        return early
+    fr = state.finish()  # type: ignore[union-attr]
+    fr.inferred = inferred
+    return fr
 
 
-def validate_file(path: PathLike, *, track: str, lang: str, name: Optional[str] = None,
+def validate_file(path: PathLike, *, track: str, lang: Optional[str] = None, name: Optional[str] = None,
                   max_examples: int = 10) -> FileReport:
     p = Path(path)
     name = name or p.name
@@ -117,6 +183,7 @@ def _new_report(track: str, source: str, strict: bool) -> Report:
 
 
 def validate_zip(path: PathLike, *, track: str, strict: bool = False, max_examples: int = 10) -> Report:
+    """Validate every .jsonl member of a zip; each member's language comes from its records."""
     p = Path(path)
     report = _new_report(track, str(p), strict)
     try:
@@ -124,32 +191,40 @@ def validate_zip(path: PathLike, *, track: str, strict: bool = False, max_exampl
     except zipfile.BadZipFile as exc:
         raise UsageProblem(f"{p}: not a valid zip file ({exc})") from exc
     with zf:
-        zs = scan(zf, track)
+        zs = scan(zf)
         if zs.unsafe:
             report.add("zip.unsafe_member", len(zs.unsafe), zs.unsafe[:max_examples])
-        if zs.duplicates:
-            ex = [f"{lang}: {', '.join(names)}" for lang, names in zs.duplicates.items()]
-            report.add("zip.duplicate_language", len(zs.duplicates), ex[:max_examples])
         if zs.ignored:
             report.add("zip.member_ignored", len(zs.ignored), zs.ignored[:max_examples])
-        for m in zs.members:
-            if m.info.compress_size > limits.MAX_COMPRESSED_BYTES:
-                fr = FileReport(m.name, track, m.language)
-                fr.add("io.oversize", reason=f"{_fmt_bytes(m.info.compress_size)} compressed exceeds the "
+        for info in zs.members:
+            if info.compress_size > limits.MAX_COMPRESSED_BYTES:
+                fr = FileReport(info.filename, track, None)
+                fr.add("io.oversize", reason=f"{_fmt_bytes(info.compress_size)} compressed exceeds the "
                                              f"{_fmt_bytes(limits.MAX_COMPRESSED_BYTES)} cap")
                 report.files.append(fr)
                 continue
-            with zf.open(m.info) as fh:
-                report.files.append(validate_stream(fh, track=track, lang=m.language, name=m.name,
+            with zf.open(info) as fh:
+                report.files.append(validate_stream(fh, track=track, lang=None, name=info.filename,
                                                     max_examples=max_examples))
-        present = zs.languages | set(zs.duplicates)
+        by_lang: dict[str, list[FileReport]] = {}
+        for fr in report.files:
+            if fr.language and in_track(track, fr.language):
+                by_lang.setdefault(fr.language, []).append(fr)
+        dups = {code: frs for code, frs in by_lang.items() if len(frs) > 1}
+        if dups:
+            report.add("zip.duplicate_language", len(dups),
+                       [f"{code}: {', '.join(fr.name for fr in frs)}" for code, frs in dups.items()][:max_examples])
+            for code, frs in dups.items():
+                for fr in frs:
+                    fr.add("zip.duplicate_language", 1, [f"{code} also in {', '.join(x.name for x in frs if x is not fr)}"])
         expected = TRACKS[track]
-        for lang in expected:
-            if lang not in present:
-                fr = FileReport(f"{lang}.jsonl", track, lang, present=False)
-                fr.add("track.language_missing", expected=len(expected), found=len(present & set(expected)))
+        present = {code for code in by_lang}
+        for code in expected:
+            if code not in present:
+                fr = FileReport(f"{code}.jsonl", track, code, present=False)
+                fr.add("track.language_missing", expected=len(expected), found=len(present))
                 report.files.append(fr)
-        report.files.sort(key=lambda fr: (fr.language or "", fr.name))
+        report.files.sort(key=lambda fr: (fr.language or "~", fr.name))
     return report
 
 
@@ -167,7 +242,7 @@ def is_zip(path: PathLike) -> bool:
 
 def validate_submission(path: PathLike, *, track: str, language: Optional[str] = None,
                         strict: bool = False, max_examples: int = 10) -> Report:
-    """CLI entry: a zip of per-language files, or one file with a declared language."""
+    """CLI entry: a zip of per-language files, or one file (language declared or inferred)."""
     p = Path(path)
     if track not in TRACKS:
         raise UsageProblem(f"unknown track {track!r}; expected one of {', '.join(TRACKS)}")
@@ -175,28 +250,25 @@ def validate_submission(path: PathLike, *, track: str, language: Optional[str] =
         raise UsageProblem(f"{p}: no such file")
     if is_zip(p):
         if language:
-            raise UsageProblem("--language cannot be combined with a zip; the zip names its languages")
+            raise UsageProblem("--language cannot be combined with a zip; each member's language comes from its records")
         return validate_zip(p, track=track, strict=strict, max_examples=max_examples)
+    lang: Optional[str] = None
     if language:
         lang = normalize(language)
         if lang is None:
             raise UsageProblem(f"unknown language {language!r}")
-    else:
-        lang = language_from_filename(p.name)
-        if lang is None:
-            raise UsageProblem(f"cannot tell the language from the filename {p.name!r}; pass --language")
-    if not in_track(track, lang):
-        raise UsageProblem(f"language '{lang}' is not in the {track} track "
-                           f"(expected one of {', '.join(TRACKS[track])})")
+        if not in_track(track, lang):
+            raise UsageProblem(f"language '{lang}' is not in the {track} track "
+                               f"(expected one of {', '.join(TRACKS[track])})")
     report = _new_report(track, str(p), strict)
     report.files.append(validate_file(p, track=track, lang=lang, max_examples=max_examples))
     return report
 
 
-def single_file_report(path: PathLike, *, track: str, lang: str, name: Optional[str] = None,
+def single_file_report(path: PathLike, *, track: str, lang: Optional[str], name: Optional[str] = None,
                        strict: bool = False, max_examples: int = 10) -> Report:
-    """Portal entry: the language is declared by the caller, never inferred."""
-    if not in_track(track, lang):
+    """Portal entry for one file: ``lang`` declared by the form, or ``None`` to infer."""
+    if lang is not None and not in_track(track, lang):
         raise UsageProblem(f"language '{lang}' is not in the {track} track")
     report = _new_report(track, name or str(path), strict)
     report.files.append(validate_file(path, track=track, lang=lang, name=name, max_examples=max_examples))

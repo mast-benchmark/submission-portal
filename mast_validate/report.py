@@ -31,16 +31,18 @@ KINDS: dict[str, tuple[Level, Callable[[int, dict], str]]] = {
     "io.oversize": (Level.ERROR, lambda n, d: f"file too large: {d.get('reason')}"),
     "io.not_jsonl": (Level.ERROR, lambda n, d: f"{d.get('reason')}"),
     "zip.unsafe_member": (Level.ERROR, lambda n, d: f"{_p(n, 'unsafe zip member')} rejected"),
-    "zip.duplicate_language": (Level.ERROR, lambda n, d: f"{_p(n, 'language')} present more than once in the zip"),
+    "zip.duplicate_language": (Level.ERROR, lambda n, d: f"{_p(n, 'language')} present in more than one zip member"),
     "json.invalid_line": (Level.ERROR, lambda n, d: f"{_p(n, 'line')} not valid JSON"),
     "json.not_object": (Level.ERROR, lambda n, d: f"{_p(n, 'line')} not a JSON object"),
     "schema.missing_field": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} missing a required field"),
     "schema.wrong_type": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} with a wrong-typed field"),
     "schema.result_empty": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} with an empty 'result'"),
     "schema.step_unknown_type": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} with a 'result' step of unknown type"),
-    "lang.mismatch": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} whose 'language' disagrees with the declared language '{d.get('declared')}'"),
+    "lang.mismatch": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} whose 'language' disagrees with the file's language '{d.get('declared')}'"),
+    "lang.undetermined": (Level.ERROR, lambda n, d: "cannot determine the file's language: no record has a recognizable 'language' field"),
+    "lang.not_in_track": (Level.ERROR, lambda n, d: f"the file's language '{d.get('language')}' is not in the {d.get('track')} track"),
     "qid.malformed": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} with an unparseable query_id"),
-    "qid.prefix_mismatch": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} whose query_id prefix disagrees with the declared language '{d.get('declared')}'"),
+    "qid.prefix_mismatch": (Level.ERROR, lambda n, d: f"{_p(n, 'record')} whose query_id prefix disagrees with the file's language '{d.get('declared')}'"),
     "qid.unknown": (Level.ERROR, lambda n, d: f"{_p(n, 'query_id')} not in the official set for {d.get('scope')}"),
     "qid.duplicate": (Level.ERROR, lambda n, d: f"{_p(n, 'query_id')} duplicated within the file"),
     "coverage.missing": (Level.ERROR, lambda n, d: f"coverage: {_p(n, 'official query_id')} missing (found {d.get('found')} of {d.get('expected')})"),
@@ -48,7 +50,7 @@ KINDS: dict[str, tuple[Level, Callable[[int, dict], str]]] = {
     # ---- warnings ----
     "docid.unknown": (Level.WARNING, lambda n, d: f"{_p(n, 'distinct docid')} ({d.get('pct')}) not in the corpus"),
     "docid.unknown_majority": (Level.WARNING, lambda n, d: f"{_p(n, 'distinct docid')} ({d.get('pct')}) not in the MAST corpus; this looks like a different corpus was indexed"),
-    "qid.reconstructed": (Level.WARNING, lambda n, d: f"query_ids in {_p(n, 'record')} carried no language prefix; reconstructed as '{d.get('declared')}-<id>' from the declared language"),
+    "qid.reconstructed": (Level.WARNING, lambda n, d: f"query_ids in {_p(n, 'record')} carried no language prefix; reconstructed as '{d.get('declared')}-<id>' from the file's language"),
     "answer.no_output_text": (Level.WARNING, lambda n, d: f"{_p(n, 'record')} with no 'output_text' step (no final answer)"),
     "answer.no_exact_answer": (Level.WARNING, lambda n, d: f"{_p(n, 'record')} with no 'Exact Answer:' in the final output_text"),
     "rounds.count_mismatch": (Level.WARNING, lambda n, d: f"{_p(n, 'record')} where len(retrieved_docids) != tool_call_counts['search']"),
@@ -99,6 +101,7 @@ class FileReport:
     present: bool = True
     records: int = 0
     findings: list[Finding] = field(default_factory=list)
+    inferred: bool = False   # language inferred from the records rather than declared
 
     def add(self, kind: str, count: int = 1, examples=(), lines=(), **details: Any) -> Finding:
         f = Finding.make(kind, count, examples, lines, **details)
@@ -118,7 +121,8 @@ class FileReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "name": self.name, "track": self.track, "language": self.language, "present": self.present,
+            "name": self.name, "track": self.track, "language": self.language, "inferred": self.inferred,
+            "present": self.present,
             "records": self.records, "errors": len(self.errors), "warnings": len(self.warnings),
             "findings": [f.to_dict() for f in sort_findings(self.findings)],
         }
@@ -239,7 +243,7 @@ def render(report: Report, *, color: bool = True, quiet: bool = False, max_examp
         lines.append("")
     width = min(max((len(fr.name) for fr in report.files), default=10), 48)
     for fr in report.files:
-        name = fr.name.ljust(width)
+        name = f"{fr.name.ljust(width)} [{fr.language or '??'}]"
         if not fr.present:
             miss = next((x for x in fr.findings if x.kind == "track.language_missing"), None)
             lines.append(f"{name}   {st.warn()} {miss.message if miss else 'missing'}")

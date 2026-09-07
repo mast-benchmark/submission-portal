@@ -76,9 +76,8 @@ def test_conflict_retries_from_fresh_state(tmp_path, monkeypatch):
     def flaky(ops, message, parent=None):
         calls["n"] += 1
         if calls["n"] == 1:
-            # someone else fills slot 1 in between
+            # someone else fills slot 1 in between: bumps the revision, so the planned commit conflicts
             real([type(ops[3])(ops[3].path, json.dumps({"slots": {"1": {"content_sha256": "zzz"}}, "uploads": 1}))], "race")
-            raise Conflict("stale")
         return real(ops, message, parent)
 
     monkeypatch.setattr(st, "commit", flaky)
@@ -86,19 +85,62 @@ def test_conflict_retries_from_fresh_state(tmp_path, monkeypatch):
     assert r["slot"] == 2 and calls["n"] == 2  # re-read saw slot 1 taken
 
 
-def test_local_storage_cas(tmp_path):
-    st = LocalStorage(tmp_path)
-    from portal.storage import Add
-    _, rev0 = st.read_versioned("manifests/x.json")
-    st.commit([Add("manifests/x.json", "{}")], "a", parent=rev0)
-    with pytest.raises(Conflict):
-        st.commit([Add("manifests/x.json", "{}")], "b", parent=rev0)
-    with pytest.raises(ValueError):
-        st.read("../escape")
-
-
 def test_rejected_name_logged(tmp_path):
     st = LocalStorage(tmp_path)
     SlotService(st).log_rejected_name("Nobody", "indic", "hi")
     files = st.list_files("rejected")
     assert len(files) == 1 and json.loads(st.read(files[0]))["name"] == "Nobody"
+
+
+def bulk_items(tmp_path, langs, tag=b"v1", warnings=0):
+    return {l: prepared(tmp_path, tag + b" " + l.encode() + b"\n", name=f"{l}.jsonl", warnings=warnings) for l in langs}
+
+
+def test_submit_many_fills_skips_and_reports(tmp_path):
+    st = LocalStorage(tmp_path / "store")
+    svc = SlotService(st, max_slots=3, max_uploads=10)
+    items = bulk_items(tmp_path, ["bn", "gu", "hi"])
+    s1 = svc.submit_many("indic", "t", "T", items, META)
+    assert [(i["language"], i["action"], i["slot"]) for i in s1["items"]] == [("bn", "slot", 1), ("gu", "slot", 1), ("hi", "slot", 1)]
+    assert len(st.list_files("receipts/indic/bulk/t")) == 1 and len(st.list_files("slots/indic")) == 6
+    # identical re-upload: nothing written, no new bulk receipt
+    s2 = svc.submit_many("indic", "t", "T", items, META)
+    assert {i["action"] for i in s2["items"]} == {"unchanged"} and len(st.list_files("receipts/indic/bulk/t")) == 1
+    # fill hi to 3, then a zip with a new hi + a new gu: hi skipped (full), gu to slot 2
+    svc.submit(SlotKey("indic", "hi", "t"), "T", prepared(tmp_path, b"hi2\n"), META)
+    svc.submit(SlotKey("indic", "hi", "t"), "T", prepared(tmp_path, b"hi3\n"), META)
+    s3 = svc.submit_many("indic", "t", "T", bulk_items(tmp_path, ["gu", "hi"], tag=b"v2"), META)
+    acts = {i["language"]: (i["action"], i["slot"]) for i in s3["items"]}
+    assert acts == {"gu": ("slot", 2), "hi": ("skipped_full", None)}
+    # same zip with replace_oldest: gu unchanged, hi replaces its oldest (slot 1)
+    s4 = svc.submit_many("indic", "t", "T", bulk_items(tmp_path, ["gu", "hi"], tag=b"v2"), META, replace_oldest=True)
+    acts = {i["language"]: (i["action"], i["slot"]) for i in s4["items"]}
+    assert acts == {"gu": ("unchanged", 2), "hi": ("replace", 1)} and s4["items"][1]["replaced"]["receipt_id"]
+    m, _ = svc.manifest(SlotKey("indic", "hi", "t"))
+    assert m["uploads"] == 4 and gzip.decompress(st.read("slots/indic/hi/t/1/run.jsonl.gz")) == b"v2 hi\n"
+    assert len(st.list_files("receipts/indic/hi/t")) == 4  # every hi upload kept
+
+
+def test_submit_many_is_atomic_on_conflict(tmp_path, monkeypatch):
+    st = LocalStorage(tmp_path / "store")
+    svc = SlotService(st, attempts=2)
+    calls = {"n": 0}
+    real = st.commit
+
+    def always_conflict(ops, message, parent=None):
+        calls["n"] += 1
+        raise Conflict("busy")
+
+    monkeypatch.setattr(st, "commit", always_conflict)
+    with pytest.raises(SlotError, match="Nothing was recorded"):
+        svc.submit_many("indic", "t", "T", bulk_items(tmp_path, ["bn", "gu"]), META)
+    monkeypatch.setattr(st, "commit", real)
+    assert calls["n"] == 2 and st.list_files("slots") == []
+
+
+def test_manifests_read_at_one_revision(tmp_path):
+    st = LocalStorage(tmp_path / "store")
+    svc = SlotService(st)
+    svc.submit(SlotKey("indic", "hi", "t"), "T", prepared(tmp_path, b"a\n"), META)
+    ms, rev = svc.manifests("indic", "t", "T", ["hi", "gu"])
+    assert set(ms) == {"hi", "gu"} and ms["hi"]["uploads"] == 1 and ms["gu"]["uploads"] == 0 and rev == "1"

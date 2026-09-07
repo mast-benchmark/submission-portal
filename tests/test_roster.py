@@ -29,6 +29,8 @@ def test_match_exact_alias_and_suggestion(tmp_path):
     assert r.match("Team Waterloo NLP").team.name == "Waterloo NLP"
     assert r.match("uw-nlp").team.name == "Waterloo NLP"
     assert r.match("Bengaluru").team.name == "Team Bengaluru"
+    assert r.match("NLP Waterloo").team.name == "Waterloo NLP"      # word order does not matter
+    assert r.match("nlp, waterloo!").team.name == "Waterloo NLP"
     m = r.match("Waterlo NLP")
     assert m.team is None and m.suggestion == "Waterloo NLP"
     m = r.match("Completely Different")

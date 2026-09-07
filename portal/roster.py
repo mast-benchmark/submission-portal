@@ -26,6 +26,11 @@ def normalize_name(name: str) -> str:
     return s
 
 
+def word_key(name: str) -> str:
+    """Order-insensitive form: 'Sahel Test' and 'Test Sahel' share a key."""
+    return " ".join(sorted(normalize_name(name).split()))
+
+
 def slugify(name: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", normalize_name(name)).strip("-")
     return s or "team"
@@ -79,6 +84,7 @@ class Roster:
         self.ttl = ttl_seconds
         self._teams: list[Team] = []
         self._index: dict[str, Team] = {}
+        self._by_words: dict[str, Team] = {}
         self._loaded_at = 0.0
 
     def _refresh(self, force: bool = False) -> None:
@@ -87,22 +93,24 @@ class Roster:
         raw = self.storage.read(ROSTER_PATH)
         teams = parse_roster(raw.decode("utf-8-sig")) if raw else []
         index: dict[str, Team] = {}
+        by_words: dict[str, Team] = {}
         for t in teams:
             for key in [t.name, *t.aliases]:
                 n = normalize_name(key)
                 if n:
                     index.setdefault(n, t)
-        self._teams, self._index, self._loaded_at = teams, index, time.time()
+                    by_words.setdefault(word_key(key), t)
+        self._teams, self._index, self._by_words, self._loaded_at = teams, index, by_words, time.time()
 
     def match(self, name: str) -> Match:
         self._refresh()
         n = normalize_name(name)
         if not n:
             return Match(None)
-        team = self._index.get(n)
+        team = self._index.get(n) or self._by_words.get(word_key(name))
         if team:
             return Match(team)
-        close = difflib.get_close_matches(n, list(self._index), n=1, cutoff=0.75)
+        close = difflib.get_close_matches(n, list(self._index), n=1, cutoff=0.6)
         if close:
             return Match(None, self._index[close[0]].name)
         return Match(None)
