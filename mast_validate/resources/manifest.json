@@ -1,0 +1,46 @@
+{
+  "built_at": "2026-09-07T16:24:01+00:00",
+  "query_repos": {
+    "multilingual": {
+      "repo": "mast-benchmark/multilingual-queries-2026",
+      "sha": "fb6614cbd965abeb7735852245fb91fd98eae3c6"
+    },
+    "indic": {
+      "repo": "mast-benchmark/indic-queries-2026",
+      "sha": "8136627a451329a860ecde6a67029136c4233f4f"
+    }
+  },
+  "scopes": {
+    "multilingual/ar": 50,
+    "multilingual/bn": 50,
+    "multilingual/cy": 50,
+    "multilingual/de": 50,
+    "multilingual/en": 50,
+    "multilingual/es": 50,
+    "multilingual/fi": 50,
+    "multilingual/fr": 50,
+    "multilingual/hi": 50,
+    "multilingual/ru": 50,
+    "multilingual/sw": 50,
+    "multilingual/ta": 50,
+    "multilingual/th": 50,
+    "multilingual/ur": 50,
+    "multilingual/zh": 50,
+    "indic/bn": 50,
+    "indic/gu": 50,
+    "indic/hi": 50,
+    "indic/kn": 50,
+    "indic/ml": 50,
+    "indic/or": 50,
+    "indic/pa": 50,
+    "indic/ta": 50,
+    "indic/te": 50
+  },
+  "expected_per_scope": 50,
+  "numeric_set_identical": true,
+  "corpus_repo": {
+    "repo": "mast-benchmark/100k-corpus-2026",
+    "sha": "8c0eab1689410716fe699083b4ea5898e7cc3673"
+  },
+  "docid_count": 100195
+}
