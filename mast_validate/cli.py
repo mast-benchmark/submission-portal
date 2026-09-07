@@ -49,8 +49,8 @@ def main(path: Path, track: str, language, strict: bool, json_path, max_examples
          quiet: bool, no_color: bool) -> int:
     """Validate a MAST 2026 run submission offline.
 
-    PATH is one per-language .jsonl (or .jsonl.gz) file, or a zip containing
-    {lang}.jsonl files for a whole track.
+    PATH is one .jsonl (or .jsonl.gz) file, or an archive (.zip, .tar, .tar.gz,
+    .tgz) holding one such file per language.
 
     \b
       mast-validate runs/hi.jsonl --track indic --language hi

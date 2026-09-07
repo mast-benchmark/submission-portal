@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import tarfile
 import tempfile
 import zipfile
 from typing import Any, Optional
@@ -22,7 +23,7 @@ import gradio as gr
 from mast_validate import __version__ as validator_version
 from mast_validate.languages import TRACKS, display_name
 from mast_validate.report import render
-from mast_validate.runner import UsageProblem, is_zip, single_file_report, validate_zip
+from mast_validate.runner import UsageProblem, archive_kind, single_file_report, validate_archive
 from portal.config import FIRE_URL, ORGANIZER_EMAIL, SITE_URL, Settings
 from portal.mailer import send_receipt
 from portal.roster import Roster, Team
@@ -58,8 +59,8 @@ def closed_message() -> str:
 HEADER = f"""
 # MAST @ FIRE 2026 · Run submission
 
-Up to **3 runs per language per team**. Upload **one `.jsonl` (or `.jsonl.gz`)**, or **one zip** holding one
-such file per language, named however you like: the records' `language`, `llm` and `retriever` fields say what
+Up to **3 runs per language per team**. Upload **one `.jsonl` (or `.jsonl.gz`)**, or **one archive** (`.zip`, `.tar`,
+`.tar.gz`, `.tgz`) holding one such file per language, named however you like: the records' `language`, `llm` and `retriever` fields say what
 each run is. Every file is checked against the official query ids and the corpus before it is stored; a file with
 errors is never recorded.
 Deadline: **{deadline_text()}**.
@@ -143,7 +144,7 @@ def _plan_table(files: list[dict[str, Any]], actions: dict[str, str]) -> str:
         name = f"`{fr['name']}`" if fr["present"] else ""
         meta = f"{fr.get('llm') or ''} · {fr.get('retriever') or ''}" if fr["present"] else ""
         if not fr["present"]:
-            action = "— (no file in the zip)"
+            action = "— (no file in the archive)"
         else:
             action = actions.get(lang or "", "not recorded (errors)")
         rows.append(f"| {display_name(lang) if lang else '?'} | {name} | {fr['records'] if fr['present'] else ''} | {meta} | {_verdict(fr)} | {action} |")
@@ -153,11 +154,20 @@ def _plan_table(files: list[dict[str, Any]], actions: dict[str, str]) -> str:
 def _read_members(path: str, report) -> dict[str, "bytes"]:
     """Raw bytes of every clean member (or of the single file), keyed by language."""
     out: dict[str, bytes] = {}
-    if is_zip(path):
+    kind = archive_kind(path)
+    if kind == "zip":
         with zipfile.ZipFile(path) as zf:
             for fr in report.files:
                 if fr.present and fr.language and not fr.errors:
                     out[fr.language] = zf.read(fr.name)
+    elif kind == "tar":
+        with tarfile.open(path, "r:*") as tf:
+            for fr in report.files:
+                if fr.present and fr.language and not fr.errors:
+                    fh = tf.extractfile(fr.name)
+                    if fh is not None:
+                        with fh:
+                            out[fr.language] = fh.read()
     else:
         fr = report.files[0]
         if fr.present and fr.language and not fr.errors:
@@ -176,8 +186,8 @@ def on_validate(team_name, track, system_type, email, replace_oldest, file):
         return fail(err)
     original = os.path.basename(path)
     try:
-        if is_zip(path):
-            report = validate_zip(path, track=track)
+        if archive_kind(path):
+            report = validate_archive(path, track=track)
         else:
             report = single_file_report(path, track=track, lang=None, name=original)
     except UsageProblem as exc:
@@ -269,7 +279,7 @@ RULES = f"""
   language is skipped, unless you tick *replace the oldest run*; a replaced run's receipt is kept, so nothing is
   lost silently.
 * A file's language, LLM and retriever are read from its records; every record must carry the same values.
-  Filenames carry no meaning. A zip may hold one file per language, named however you like.
+  Filenames carry no meaning. An archive (zip or tar) may hold one file per language, named however you like.
 * Every upload gets a receipt id and a sha256 per language. Keep the receipt. Organizers evaluate exactly the
   stored bytes.
 * Errors block a file; warnings do not, but each one costs score. `Exact Answer:` must appear in the final
@@ -288,8 +298,8 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
             system_type = gr.Radio(choices=SYSTEM_TYPES, label="System type", value=None)
         with gr.Column():
             email = gr.Textbox(label="Contact email", placeholder="receipt goes here and to the team contact")
-            upload = gr.File(label="Run file(s): one .jsonl / .jsonl.gz, or a .zip with one per language",
-                             file_types=[".jsonl", ".gz", ".zip"], type="filepath")
+            upload = gr.File(label="Run file(s): one .jsonl / .jsonl.gz, or a .zip / .tar / .tar.gz / .tgz with one per language",
+                             file_types=[".jsonl", ".gz", ".zip", ".tar", ".tgz"], type="filepath")
             replace_oldest = gr.Checkbox(label="Replace the oldest run for languages whose 3 slots are already full", value=False)
     validate_btn = gr.Button("Validate", variant="primary")
     status = gr.Markdown()

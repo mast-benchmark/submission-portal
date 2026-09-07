@@ -1,4 +1,4 @@
-"""Safe walking of a participant zip. Never extracts; members are streamed.
+"""Safe walking of a participant archive (zip, tar, tar.gz, tgz). Never extracts; members are streamed.
 
 Every ``.jsonl`` / ``.jsonl.gz`` member is a candidate run file, whatever its
 name; the language is decided from its records, never from the filename.
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import stat
+import tarfile
 import zipfile
 from dataclasses import dataclass, field
 from typing import Optional
@@ -20,7 +21,7 @@ _JSONL_EXTS = (".jsonl", ".jsonl.gz")
 
 @dataclass
 class ZipScan:
-    members: list[zipfile.ZipInfo] = field(default_factory=list)
+    members: list = field(default_factory=list)   # ZipInfo or TarInfo
     ignored: list[str] = field(default_factory=list)   # "name (reason)"
     unsafe: list[str] = field(default_factory=list)    # "name (reason)"
 
@@ -67,4 +68,41 @@ def scan(zf: zipfile.ZipFile) -> ZipScan:
             continue
         out.members.append(info)
     out.members.sort(key=lambda i: i.filename)
+    return out
+
+
+def unsafe_reason_tar(info: tarfile.TarInfo) -> Optional[str]:
+    name = info.name
+    if "\x00" in name:
+        return "NUL in name"
+    if name.startswith(("/", "\\")) or _DRIVE.match(name):
+        return "absolute path"
+    if any(p == ".." for p in re.split(r"[\\/]+", name)):
+        return "path traversal"
+    if info.issym():
+        return "symlink"
+    if info.islnk():
+        return "hard link"
+    if not info.isreg():
+        return "not a regular file"
+    return None
+
+
+def scan_tar(tf: tarfile.TarFile) -> ZipScan:
+    out = ZipScan()
+    for info in tf:
+        name = info.name
+        if info.isdir():
+            continue
+        if _is_noise(name):
+            continue
+        reason = unsafe_reason_tar(info)
+        if reason:
+            out.unsafe.append(f"{name} ({reason})")
+            continue
+        if not name.lower().endswith(_JSONL_EXTS):
+            out.ignored.append(f"{name} (not a .jsonl file)")
+            continue
+        out.members.append(info)
+    out.members.sort(key=lambda i: i.name)
     return out
