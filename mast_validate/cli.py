@@ -36,7 +36,7 @@ class _Command(click.Command):
 @click.option("--track", required=True, type=click.Choice(TRACK_NAMES, case_sensitive=False),
               help="Track the submission is for.")
 @click.option("--language", "-l", default=None, metavar="LANG",
-              help="Declared language of a single file (code or name). Default: from the filename.")
+              help="Declare the language of a single file (code or name). Default: read from the records.")
 @click.option("--strict", is_flag=True, help="Treat warnings as errors.")
 @click.option("--json", "json_path", type=click.Path(dir_okay=False, path_type=Path), metavar="PATH",
               help="Also write a machine-readable report to PATH ('-' for stdout).")
@@ -53,8 +53,8 @@ def main(path: Path, track: str, language, strict: bool, json_path, max_examples
     .tgz) holding one such file per language.
 
     \b
-      mast-validate runs/hi.jsonl --track indic --language hi
-      mast-validate submission.zip --track multilingual --json report.json
+      mast-validate runs/hi.jsonl --track indic
+      mast-validate submission.tar.gz --track multilingual --json report.json
     """
     try:
         report = validate_submission(path, track=track.lower(), language=language, strict=strict,

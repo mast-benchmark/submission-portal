@@ -1,9 +1,9 @@
-"""Streaming validation of one file, one zip, or whatever path is given.
+"""Streaming validation of one file, one archive, or whatever path is given.
 
 A file's language is either *declared* by the caller or *inferred* from its
-records: the first records' ``language`` fields decide (majority of the first
-``PEEK_RECORDS``), and every record must then agree, including query-id
-prefixes. Filenames are never used. Everything is read line by line.
+records: the ``language`` fields of the first ``PEEK_RECORDS`` records pick the
+value to check against, and every record must agree with it, query-id
+prefixes included. Filenames are never used. Everything is read line by line.
 """
 from __future__ import annotations
 

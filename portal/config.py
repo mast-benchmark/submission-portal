@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional
+
+from .ratelimit import Limit, parse_limit
 
 DEFAULT_DEADLINE = "2026-09-16T11:59:59+00:00"   # Sep 15, 2026, end of day AoE (UTC-12)
 ORGANIZER_EMAIL = "mast-organizers@googlegroups.com"
@@ -15,6 +18,14 @@ SITE_URL = "https://mast-benchmark.github.io/"
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.environ.get(name)
     return v if v not in (None, "") else default
+
+
+def _limit(name: str, default: str) -> Limit:
+    try:
+        return parse_limit(_env(name), default)
+    except ValueError as exc:
+        logging.getLogger("portal.config").warning("%s: %s; using default %s", name, exc, default)
+        return parse_limit(default, default)
 
 
 @dataclass
@@ -33,6 +44,9 @@ class Settings:
     smtp_password: Optional[str] = None
     smtp_from: Optional[str] = None
     commit_attempts: int = 5
+    rate_validate_per_ip: Limit = Limit(20, 600)     # RATE_VALIDATE_PER_IP, e.g. '20/600' or 'off'
+    rate_record_per_ip: Limit = Limit(10, 3600)      # RATE_RECORD_PER_IP
+    rate_record_per_team: Limit = Limit(15, 3600)    # RATE_RECORD_PER_TEAM
 
     @property
     def email_enabled(self) -> bool:
@@ -61,4 +75,7 @@ class Settings:
             smtp_user=_env("SMTP_USER"),
             smtp_password=_env("SMTP_PASSWORD"),
             smtp_from=_env("SMTP_FROM"),
+            rate_validate_per_ip=_limit("RATE_VALIDATE_PER_IP", "20/600"),
+            rate_record_per_ip=_limit("RATE_RECORD_PER_IP", "10/3600"),
+            rate_record_per_team=_limit("RATE_RECORD_PER_TEAM", "15/3600"),
         )

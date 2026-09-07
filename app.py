@@ -1,7 +1,7 @@
 """MAST @ FIRE 2026 run submission portal (Gradio Space).
 
-One form: upload one ``.jsonl`` (or ``.jsonl.gz``), or a zip holding one such
-file per language. Language, LLM and retriever are read from the records.
+One form: upload one ``.jsonl`` (or ``.jsonl.gz``), or an archive (zip or tar)
+holding one such file per language. Language, LLM and retriever are read from the records.
 Every clean file goes to its language's next free slot in one atomic commit.
 Files are validated with ``mast_validate`` in memory; only clean files reach
 storage. Team names are honor-system against a private roster never rendered.
@@ -26,6 +26,7 @@ from mast_validate.runner import UsageProblem, archive_kind, single_file_report,
 from portal.config import FIRE_URL, ORGANIZER_EMAIL, SITE_URL, Settings
 from portal.mailer import send_receipt
 from portal import tmpfiles
+from portal.ratelimit import Limiter, client_address
 from portal.rejected import RejectedLog
 from portal.roster import Roster, Team
 from portal.slots import Meta, Prepared, SlotError, SlotService, prepare_stream
@@ -40,6 +41,9 @@ roster = Roster(storage, settings.roster_ttl_seconds)
 slots = SlotService(storage, max_slots=settings.max_slots, max_uploads=settings.max_uploads_per_key,
                     attempts=settings.commit_attempts)
 rejected = RejectedLog(storage)
+limit_validate_ip = Limiter(settings.rate_validate_per_ip)
+limit_record_ip = Limiter(settings.rate_record_per_ip)
+limit_record_team = Limiter(settings.rate_record_per_team)
 
 TRACK_LABELS = {"multilingual": "MAST Multilingual (15 languages)", "indic": "MAST Indic (9 languages)"}
 SYSTEM_TYPES = ["Agentic", "Retrieval-only"]
@@ -194,12 +198,22 @@ def _prepare_members(path: str, report, rd: dict[str, Any], track: str) -> tuple
     return items, failed
 
 
-def on_validate(team_name, track, system_type, email, replace_oldest, file):
+def _too_many(what: str, limiter: Limiter, retry: int) -> str:
+    return (f"**Too many requests:** the limit is {limiter.limit.describe()} for {what}. "
+            f"Try again in about {max(1, retry // 60)} minute{'s' if retry >= 120 else ''}. Nothing was recorded.")
+
+
+def on_validate(team_name, track, system_type, email, replace_oldest, file, request: gr.Request = None):
     """Validate one .jsonl(.gz) or a zip of them; show what would be recorded where."""
     def fail(msg: str, report_path: Optional[str] = None):
         return msg, gr.update(value=report_path, visible=report_path is not None), gr.update(visible=False), None
 
     tmpfiles.sweep()
+    addr = client_address(request)
+    allowed, retry = limit_validate_ip.hit(addr)
+    if not allowed:
+        log.warning("rate limit: validate addr=%s", addr)
+        return fail(_too_many("validations from one address", limit_validate_ip, retry))
     err, team, path = _common_checks(team_name, track, system_type, email, file)
     if err:
         return fail(err)
@@ -245,7 +259,7 @@ def on_validate(team_name, track, system_type, email, replace_oldest, file):
             gr.update(visible=True, value=f"Record {len(writable)} language{'s' if len(writable) != 1 else ''}"), state)
 
 
-def on_submit(state):
+def on_submit(state, request: gr.Request = None):
     """Commit every writable language in one atomic commit; clear the state so a double click does nothing."""
     if settings.is_closed():
         return closed_message(), gr.update(visible=False), gr.update(visible=False), None
@@ -253,6 +267,20 @@ def on_submit(state):
         return "Validate a file first.", gr.update(visible=False), gr.update(visible=False), None
     team: Team = state["team"]
     track = state["track"]
+    addr = client_address(request)
+    allowed, retry = limit_record_ip.hit(addr)
+    if allowed:
+        allowed, retry = limit_record_team.hit(team.slug)
+        what = "submissions by one team"
+        limiter = limit_record_team
+    else:
+        what, limiter = "submissions from one address", limit_record_ip
+    if not allowed:
+        log.warning("rate limit: record addr=%s team=%s", addr, team.slug)
+        return _too_many(what, limiter, retry), gr.update(visible=False), gr.update(), state
+    if any(not p.gz_path.is_file() for p in state["items"].values()):
+        return ("**Not recorded:** this validation is too old (prepared files are kept for an hour). "
+                "Validate again, then record.", gr.update(visible=False), gr.update(visible=False), None)
     try:
         summary = slots.submit_many(track, team.slug, team.name, state["items"], state["meta"],
                                     replace_oldest=state["replace_oldest"])
@@ -307,6 +335,9 @@ RULES = f"""
 * Errors block a file; warnings do not, but each one costs score. `Exact Answer:` must appear in the final
   `output_text`; unknown docids score as misses; unprefixed `query_id`s are accepted and reconstructed.
 * Overlap languages (bn, hi, ta) exist in both tracks; submit to each track you take part in.
+* Rate limits: {settings.rate_validate_per_ip.describe() if settings.rate_validate_per_ip.enabled else 'none'} for validations per address,
+  {settings.rate_record_per_ip.describe() if settings.rate_record_per_ip.enabled else 'none'} for submissions per address,
+  {settings.rate_record_per_team.describe() if settings.rate_record_per_team.enabled else 'none'} for submissions per team.
 * Questions: {ORGANIZER_EMAIL}. Validator version {validator_version}.
 """
 

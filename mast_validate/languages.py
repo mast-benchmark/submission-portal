@@ -1,8 +1,9 @@
 """Language codes, aliases, and track membership for MAST 2026.
 
 Canonical form everywhere is the two-letter ISO 639-1 code. Participants may
-write either the code or a name (``"chinese"``), in any case, in both the
-``language`` field and filenames; :func:`normalize` maps all of them to the code.
+write either the code or a name (``"chinese"``), in any case, in the
+``language`` field; :func:`normalize` maps all of them to the code. Filenames
+carry no meaning.
 """
 from __future__ import annotations
 
@@ -112,34 +113,3 @@ def in_track(track: str, code: str) -> bool:
 def display_name(code: str) -> str:
     """``"hi"`` -> ``"Hindi (hi)"``."""
     return f"{NAMES.get(code, code)} ({code})"
-
-
-_FILE_EXTS = (".jsonl.gz", ".jsonl", ".json.gz", ".json", ".gz", ".txt")
-_SPLIT = re.compile(r"[-_.\s]+")
-
-
-def language_from_filename(name: str) -> Optional[str]:
-    """Best-effort language hint from a filename such as ``runs/hi.jsonl``.
-
-    Tries the whole stem first (so ``zh-cn.jsonl`` works), then the last and
-    first hyphen/underscore-separated tokens (``run_hi.jsonl``, ``hindi_bm25.jsonl``).
-    This is only a hint; the declared language always wins.
-    """
-    base = name.replace("\\", "/").rsplit("/", 1)[-1]
-    low = base.lower()
-    for ext in _FILE_EXTS:
-        if low.endswith(ext):
-            base = base[: -len(ext)]
-            break
-    stem = base.strip()
-    if not stem:
-        return None
-    code = normalize(stem)
-    if code:
-        return code
-    parts = [p for p in _SPLIT.split(stem) if p]
-    for candidate in ([parts[-1], parts[0]] if parts else []):
-        code = normalize(candidate)
-        if code:
-            return code
-    return None

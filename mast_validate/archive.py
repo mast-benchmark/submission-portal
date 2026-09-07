@@ -104,5 +104,5 @@ def scan_tar(tf: tarfile.TarFile) -> ZipScan:
             out.ignored.append(f"{name} (not a .jsonl file)")
             continue
         out.members.append(info)
-    out.members.sort(key=lambda i: i.name)
+    out.members.sort(key=lambda i: i.offset)  # archive order: a compressed tar re-reads the stream for out-of-order members
     return out

@@ -5,12 +5,12 @@ Layout in storage (spec §8):
     slots/{track}/{lang}/{team_slug}/{n}/run.jsonl.gz     n in 1..3
     slots/{track}/{lang}/{team_slug}/{n}/receipt.json
     receipts/{track}/{lang}/{team_slug}/{ts}-{sha8}.json  every upload ever, never deleted
-    receipts/{track}/bulk/{team_slug}/{ts}-{sha8}.json    one per whole-track zip upload
+    receipts/{track}/bulk/{team_slug}/{ts}-{sha8}.json    one per upload (file or archive): what went where
     manifests/{track}/{lang}/{team_slug}.json             slot -> metadata
     rejected/{ts}-{hash}.json                             rejected team names, one file per flush window
 
-A single-language upload and a whole-track zip upload share the same slot
-model; the zip form fills several languages in one atomic commit.
+Every upload, one file or an archive of files, fills its languages' slots in
+one atomic commit.
 """
 from __future__ import annotations
 
