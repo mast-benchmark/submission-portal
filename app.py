@@ -115,10 +115,11 @@ def _common_checks(team_name, track, email, file):
         return (f"**{team.name}** is registered for the **{' and '.join(team.tracks)}** track"
                 f"{'s' if len(team.tracks) > 1 else ''} only; this upload is for **{track}**. "
                 f"Email {ORGANIZER_EMAIL} to add a track to your registration. Nothing was recorded.", None, None)
-    if not team.knows_email(email):
+    if not team.knows_email(email, track):
         log.warning("email refused team=%s", team.slug)
-        return (f"The contact email is not one of the addresses registered for **{team.name}**. Use the address of a "
-                f"team member from the registration form, or email {ORGANIZER_EMAIL} to update it. Nothing was recorded.",
+        return (f"The contact email is not one of the addresses registered for **{team.name}** on the {track} track. "
+                f"Use an address from your team's latest registration, or email {ORGANIZER_EMAIL} to update it. "
+                f"Nothing was recorded.",
                 None, None)
     path = _upload_path(file)
     if not path:
@@ -310,7 +311,7 @@ def on_submit(state, request: gr.Request = None):
             f"Uploaded at: {summary['uploaded_at']}\nSubmitted by: {summary['submitter_email']}\n\n"
             + "\n".join(f"{i['language']}: {i['action']}" + (f" slot {i['slot']} receipt {i['receipt_id']} sha256 {i['sha256']} llm {i['llm']} retriever {i['retriever']}"
                                                               if i['receipt_id'] else f" ({i['note']})") for i in summary["items"]) + "\n")
-    mailed = send_receipt(settings, [summary["submitter_email"], *team.notify_emails],
+    mailed = send_receipt(settings, [summary["submitter_email"], *team.notify_emails(track)],
                           f"[MAST 2026] receipt {summary['bulk_receipt_id']} · {team.name} · {track}", body)
     md = (f"### ✓ {len(written)} language{'s' if len(written) != 1 else ''} recorded · receipt `{summary['bulk_receipt_id']}`\n\n"
           + "\n".join(rows) + "\n\n" + _coverage_line(track, team) + "\n\n"

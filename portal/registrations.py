@@ -31,17 +31,19 @@ def tracks_from_cell(cell: str) -> list[str]:
 def rows_to_teams(rows: Iterable[list], aliases: Optional[dict[str, str]] = None) -> tuple[list[Team], list[str]]:
     """Rows including the header row -> (teams, notes).
 
-    A team registered more than once keeps the latest row's name, contact and
-    timestamp; member emails and tracks are unioned so nobody who registered
-    under the name is locked out. Rows without a recognizable track are skipped
-    and reported in ``notes``.
+    Rows are in sheet order (chronological). For every (team, track) pair the
+    **latest** row is the registration: its members are the eligible submitters
+    for that track, earlier rows for the same pair are superseded entirely. A
+    row for both tracks defines both. Rows with no recognizable track are skipped.
     """
+    from .roster import normalize_name
+
     rows = [list(r) for r in rows]
     notes: list[str] = []
     if not rows:
         return [], ["empty sheet"]
     headers = [str(h) for h in rows[0]]
-    c_name, c_track = find_col(headers, "Team Name"), find_col(headers, "Which MAST Track")
+    c_name, c_track, c_ts = find_col(headers, "Team Name"), find_col(headers, "Which MAST Track"), find_col(headers, "Timestamp")
     c_emails = [find_col(headers, f"Member #{i} Email") for i in range(1, 5)]
     if c_name is None or c_track is None or c_emails[0] is None:
         return [], [f"unexpected headers: {headers[:4]}..."]
@@ -49,30 +51,27 @@ def rows_to_teams(rows: Iterable[list], aliases: Optional[dict[str, str]] = None
     def cell(r: list, i: Optional[int]) -> str:
         return str(r[i]).strip() if i is not None and i < len(r) and r[i] is not None else ""
 
-    by_key: dict[str, dict] = {}
+    teams: dict[str, Team] = {}
+    defined_by: dict[tuple[str, str], int] = {}
     for n, r in enumerate(rows[1:], 2):
         name = cell(r, c_name)
         if not name:
             continue
-        key = re.sub(r"\s+", " ", name).lower()
-        emails = [e for e in (cell(r, c) for c in c_emails) if e]
+        key = normalize_name(name)
+        emails = list(dict.fromkeys(e for e in (cell(r, c) for c in c_emails) if e))
         tracks = tracks_from_cell(cell(r, c_track))
-        entry = by_key.get(key)
-        if not tracks and entry is None:
+        if not tracks:
             notes.append(f"row {n} ({name!r}): no track recognized; skipped")
             continue
-        if entry is None:
-            by_key[key] = {"name": name, "contact": emails[0] if emails else "", "emails": list(dict.fromkeys(emails)),
-                           "tracks": list(tracks)}
-        else:
-            notes.append(f"row {n} ({name!r}): duplicate registration merged")
-            entry["name"] = name
-            if emails:
-                entry["contact"] = emails[0]
-            entry["emails"] = list(dict.fromkeys(entry["emails"] + emails))
-            entry["tracks"] = list(dict.fromkeys(entry["tracks"] + tracks))
-    alias_map = {re.sub(r"\s+", " ", k).lower(): v for k, v in (aliases or {}).items()}
-    teams = [Team(name=e["name"], contact_email=e["contact"], member_emails=e["emails"], tracks=e["tracks"],
-                  aliases=[a.strip() for a in alias_map.get(k, "").split(";") if a.strip()])
-             for k, e in by_key.items()]
-    return teams, notes
+        team = teams.setdefault(key, Team(name=name))
+        team.name = name                                   # latest spelling
+        for track in tracks:
+            if (key, track) in defined_by:
+                notes.append(f"row {n} ({name!r}, {track}): supersedes row {defined_by[(key, track)]}")
+            defined_by[(key, track)] = n
+            team.members[track] = emails
+            team.registered_at[track] = cell(r, c_ts)
+    alias_map = {normalize_name(k): v for k, v in (aliases or {}).items()}
+    for key, team in teams.items():
+        team.aliases = [a.strip() for a in alias_map.get(key, "").split(";") if a.strip()]
+    return list(teams.values()), notes

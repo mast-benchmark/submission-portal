@@ -10,9 +10,8 @@ HEAD = ["Timestamp", "Team Name", "Member #1 (Full Name, Affiliation)\ne.g. Nand
 ML = "MAST Multilingual (16 diverse languages: Chinese, German, Yoruba, ...)"
 IN = "Mast Indic (10 Indian languages: Hindi, Kannada, Bengali, Punjabi, ....)"
 ROWS = [HEAD,
-        ["8/17/2026 23:34:00", "ZeroOne", "A", "a@x.org", "B", "b@x.org", "", "", "", "", ML, ""],
-        ["8/18/2026 0:03:05", "ZeroOne", "A", "a@x.org", "B", "b@x.org", "C", "c@x.org", "", "", IN],  # short row: the API drops trailing blanks
-        ["8/19/2026 0:03:05", "ZeroOne", "A", "a@x.org", "D", "d@x.org"],                                  # re-registration without a track still merges
+        ["8/17/2026 23:34:00", "ZeroOne", "A", "a@x.org", "B", "b@x.org", "", "", "", "", f"{ML}, {IN}", ""],
+        ["8/18/2026 0:03:05", "zeroone", "A", "a@x.org", "C", "c@x.org", "", "", "", "", IN],   # later indic row: replaces the indic set; short row (API drops trailing blanks)
         ["8/20/2026 12:52:56", "BhashaVidya", "P, JU", "p@ju.in", "", "", "", "", "", "", IN, ""],
         ["8/21/2026 1:00:00", "No Track", "X", "x@x.org", "", "", "", "", "", "", "", ""],
         ["8/22/2026 1:00:00", "", "", "", "", "", "", "", "", "", ML, ""]]
@@ -22,13 +21,17 @@ def test_tracks_from_cell():
     assert tracks_from_cell(f"{ML}, {IN}") == ["multilingual", "indic"] and tracks_from_cell(IN) == ["indic"] and tracks_from_cell("") == []
 
 
-def test_rows_to_teams_merges_and_skips():
+def test_latest_row_per_track_wins():
     teams, notes = rows_to_teams(ROWS, {"BhashaVidya": "bhasha vidya;BV"})
     by = {t.name: t for t in teams}
-    assert set(by) == {"ZeroOne", "BhashaVidya"}
-    assert by["ZeroOne"].member_emails == ["a@x.org", "b@x.org", "c@x.org", "d@x.org"] and by["ZeroOne"].tracks == ["multilingual", "indic"]
+    assert set(by) == {"zeroone", "BhashaVidya"}                     # latest spelling of the name
+    z = by["zeroone"]
+    assert z.tracks == ["multilingual", "indic"]
+    assert z.emails_for("multilingual") == {"a@x.org", "b@x.org"}   # first row still defines multilingual
+    assert z.emails_for("indic") == {"a@x.org", "c@x.org"}          # second row replaced the indic set (B is out)
+    assert z.registered_at["indic"] == "8/18/2026 0:03:05"
     assert by["BhashaVidya"].aliases == ["bhasha vidya", "BV"] and by["BhashaVidya"].tracks == ["indic"]
-    assert any("duplicate registration merged" in n for n in notes) and any("No Track" in n for n in notes)
+    assert any("supersedes row 2" in n for n in notes) and any("No Track" in n for n in notes)
 
 
 def test_rows_to_teams_bad_headers():
@@ -48,11 +51,11 @@ class FakeSheet:
 
 def test_roster_from_sheet_and_fallbacks(tmp_path):
     st = LocalStorage(tmp_path)
-    st.commit([Add("teams.csv", "team_name,contact_email,member_emails,tracks,aliases,registered_at\nCsvTeam,c@x.org,c@x.org,indic,,t\n"),
+    st.commit([Add("teams.csv", "team_name,track,contact_email,member_emails,aliases,registered_at\nCsvTeam,indic,c@x.org,c@x.org,,t\n"),
                Add("aliases.csv", "team_name,aliases\nZeroOne,zero one;01\n")], "seed")
     sheet = FakeSheet(ROWS)
     r = Roster(st, ttl_seconds=0, sheet=sheet)
-    assert r.match("zeroone").team.name == "ZeroOne" and r.match("01").team.name == "ZeroOne" and r.source == "sheet"
+    assert r.match("ZeroOne").team.name == "zeroone" and r.match("01").team.name == "zeroone" and r.source == "sheet"
     assert r.match("CsvTeam").team is None                     # the sheet is the source, not the csv
     sheet.fail = True
     assert r.match("ZeroOne").team is not None and "sheet down" in r.last_error   # last good roster kept
@@ -67,7 +70,7 @@ def test_roster_from_responses_csv(tmp_path):
     buf = io.StringIO(); csv.writer(buf).writerows(ROWS)
     st = LocalStorage(tmp_path)
     st.commit([Add("responses.csv", buf.getvalue()),
-               Add("teams.csv", "team_name,contact_email,member_emails,tracks,aliases,registered_at\nCsvTeam,c@x.org,c@x.org,indic,,t\n")], "seed")
+               Add("teams.csv", "team_name,track,contact_email,member_emails,aliases,registered_at\nCsvTeam,indic,c@x.org,c@x.org,,t\n")], "seed")
     r = Roster(st, ttl_seconds=0)
-    assert r.match("zeroone").team.member_emails == ["a@x.org", "b@x.org", "c@x.org", "d@x.org"] and r.source == "responses.csv"
+    assert r.match("zeroone").team.emails_for("indic") == {"a@x.org", "c@x.org"} and r.source == "responses.csv"
     assert r.match("CsvTeam").team is None            # responses.csv wins over the manual import

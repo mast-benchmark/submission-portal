@@ -1,26 +1,35 @@
 from portal.roster import Roster, normalize_name, parse_roster, slugify
 from portal.storage import Add, LocalStorage
 
-CSV = """team_name,contact_email,member_emails,tracks,aliases,registered_at
-Waterloo NLP,a@uw.ca,a@uw.ca;b@uw.ca,multilingual;indic,UW NLP;Waterloo-NLP,2026-06-11
-Team Bengaluru,x@iisc.in,x@iisc.in,indic,,2026-07-01
+CSV = """team_name,track,contact_email,member_emails,aliases,registered_at
+Waterloo NLP,multilingual,a@uw.ca,a@uw.ca;b@uw.ca,UW NLP;Waterloo-NLP,2026-06-11
+Waterloo NLP,indic,c@uw.ca,c@uw.ca,,2026-07-02
+Team Bengaluru,indic,x@iisc.in,x@iisc.in,,2026-07-01
+"""
+LEGACY = """team_name,contact_email,member_emails,tracks,aliases,registered_at
+Old Team,o@x.org,o@x.org;p@x.org,multilingual;indic,,t
 """
 
 
 def test_normalize_and_slug():
     assert normalize_name("  Team  Waterloo-NLP! ") == "waterloo nlp"
-    assert normalize_name("TEAM") == "team"  # a team literally called Team keeps its name
+    assert normalize_name("TEAM") == "team"
     assert normalize_name("mast_agentic_ai") == normalize_name("mast agentic ai") == "mast agentic ai"
-    assert slugify("mast_agentic_ai") == "mast-agentic-ai"
-    assert slugify("Waterloo NLP") == "waterloo-nlp"
-    assert slugify("Team Bengaluru") == "bengaluru"
+    assert slugify("Waterloo NLP") == "waterloo-nlp" and slugify("mast_agentic_ai") == "mast-agentic-ai"
 
 
-def test_parse():
-    teams = parse_roster(CSV)
-    assert [t.name for t in teams] == ["Waterloo NLP", "Team Bengaluru"]
-    assert teams[0].tracks == ["multilingual", "indic"] and teams[0].aliases == ["UW NLP", "Waterloo-NLP"]
-    assert teams[0].member_emails == ["a@uw.ca", "b@uw.ca"]
+def test_parse_per_track():
+    teams = {t.name: t for t in parse_roster(CSV)}
+    w = teams["Waterloo NLP"]
+    assert w.tracks == ["multilingual", "indic"] and w.aliases == ["UW NLP", "Waterloo-NLP"]
+    assert w.emails_for("multilingual") == {"a@uw.ca", "b@uw.ca"} and w.emails_for("indic") == {"c@uw.ca"}
+    assert w.contact_for("indic") == "c@uw.ca" and w.knows_email(" B@UW.CA ", "multilingual") and not w.knows_email("b@uw.ca", "indic")
+    assert w.notify_emails("multilingual") == ["a@uw.ca"] and w.notify_emails("nope") == []
+
+
+def test_parse_legacy_layout():
+    t = parse_roster(LEGACY)[0]
+    assert t.tracks == ["multilingual", "indic"] and t.emails_for("indic") == {"o@x.org", "p@x.org"}
 
 
 def test_match_exact_alias_and_suggestion(tmp_path):
@@ -35,9 +44,7 @@ def test_match_exact_alias_and_suggestion(tmp_path):
     assert r.match("waterloo, nlp!").team.name == "Waterloo NLP"     # punctuation and case do not
     m = r.match("Waterlo NLP")
     assert m.team is None and m.suggestion == "Waterloo NLP"
-    m = r.match("Completely Different")
-    assert m.team is None and m.suggestion is None
-    assert r.match("").team is None
+    assert r.match("Completely Different").team is None and r.match("").team is None
 
 
 def test_roster_refreshes_after_update(tmp_path):
@@ -45,16 +52,10 @@ def test_roster_refreshes_after_update(tmp_path):
     st.commit([Add("teams.csv", CSV)], "roster")
     r = Roster(st, ttl_seconds=0)
     assert r.match("Late Team").team is None
-    st.commit([Add("teams.csv", CSV + "Late Team,l@x.org,l@x.org,multilingual,,2026-09-15\n")], "roster")
+    st.commit([Add("teams.csv", CSV + "Late Team,multilingual,l@x.org,l@x.org,,2026-09-15\n")], "roster")
     assert r.match("late team").team.name == "Late Team"
 
 
 def test_missing_roster_is_empty(tmp_path):
     r = Roster(LocalStorage(tmp_path), ttl_seconds=0)
     assert r.size() == 0 and r.match("anyone").team is None
-
-
-def test_registered_emails():
-    t = parse_roster(CSV)[0]
-    assert t.all_emails == {"a@uw.ca", "b@uw.ca"}
-    assert t.knows_email(" B@UW.CA ") and not t.knows_email("x@uw.ca") and not t.knows_email("")

@@ -45,10 +45,11 @@ def slugify(name: str) -> str:
 
 @dataclass
 class Team:
+    """One registered team. Membership is per track: the latest registration row for a
+    (team, track) pair defines that track's eligible submitters, replacing earlier rows."""
     name: str
-    contact_email: str
-    member_emails: list[str] = field(default_factory=list)
-    tracks: list[str] = field(default_factory=list)
+    members: dict[str, list[str]] = field(default_factory=dict)   # track -> emails, first one is the contact
+    registered_at: dict[str, str] = field(default_factory=dict)   # track -> timestamp of the defining row
     aliases: list[str] = field(default_factory=list)
 
     @property
@@ -56,16 +57,22 @@ class Team:
         return slugify(self.name)
 
     @property
-    def notify_emails(self) -> list[str]:
-        return [self.contact_email] if self.contact_email else []
+    def tracks(self) -> list[str]:
+        return list(self.members)
 
-    @property
-    def all_emails(self) -> set[str]:
-        """Every address registered for the team, lower-cased."""
-        return {e.strip().lower() for e in [self.contact_email, *self.member_emails] if e and e.strip()}
+    def emails_for(self, track: str) -> set[str]:
+        return {e.strip().lower() for e in self.members.get(track, []) if e and e.strip()}
 
-    def knows_email(self, email: str) -> bool:
-        return (email or "").strip().lower() in self.all_emails
+    def contact_for(self, track: str) -> Optional[str]:
+        lst = self.members.get(track) or []
+        return lst[0] if lst else None
+
+    def knows_email(self, email: str, track: str) -> bool:
+        return (email or "").strip().lower() in self.emails_for(track)
+
+    def notify_emails(self, track: str) -> list[str]:
+        c = self.contact_for(track)
+        return [c] if c else []
 
 
 @dataclass
@@ -75,21 +82,32 @@ class Match:
 
 
 def parse_roster(text: str) -> list[Team]:
+    """``teams.csv``: one row per (team, track): team_name, track, contact_email, member_emails, aliases, registered_at.
+
+    The legacy one-row-per-team layout (a ``tracks`` column) is accepted too: its emails apply to every track.
+    """
     reader = csv.DictReader(io.StringIO(text))
-    teams: list[Team] = []
+    by_key: dict[str, Team] = {}
+    split = lambda v: [x.strip() for x in re.split(r"[;,]", v or "") if x.strip()]  # noqa: E731
     for row in reader:
         name = (row.get("team_name") or "").strip()
         if not name:
             continue
-        split = lambda s: [x.strip() for x in re.split(r"[;,]", s or "") if x.strip()]  # noqa: E731
-        teams.append(Team(
-            name=name,
-            contact_email=(row.get("contact_email") or "").strip(),
-            member_emails=split(row.get("member_emails")),
-            tracks=[t.lower() for t in split(row.get("tracks"))],
-            aliases=[a for a in re.split(r";", row.get("aliases") or "") if a.strip()],
-        ))
-    return teams
+        key = normalize_name(name)
+        team = by_key.setdefault(key, Team(name=name))
+        team.name = name
+        emails = split(row.get("member_emails"))
+        contact = (row.get("contact_email") or "").strip()
+        if contact and contact not in emails:
+            emails.insert(0, contact)
+        tracks = [t.lower() for t in split(row.get("track") or row.get("tracks"))]
+        for track in tracks:
+            team.members[track] = emails
+            team.registered_at[track] = (row.get("registered_at") or "").strip()
+        for a in re.split(r";", row.get("aliases") or ""):
+            if a.strip() and a.strip() not in team.aliases:
+                team.aliases.append(a.strip())
+    return list(by_key.values())
 
 
 class SheetSource:
