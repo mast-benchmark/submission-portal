@@ -29,9 +29,6 @@ uploads, manifests and receipts are in a **private** dataset repo named by `SUBM
 | `RATE_RECORD_PER_IP` | variable | recorded submissions per client address; default `10/3600` |
 | `RATE_RECORD_PER_TEAM` | variable | recorded submissions per team, any address; default `15/3600` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | secrets | optional; receipts are emailed only when set |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | secret | optional; the service-account key JSON. With `REGISTRATION_SHEET_ID` the roster is read live from the registration sheet |
-| `REGISTRATION_SHEET_ID` | variable | the id in the responses sheet URL |
-| `REGISTRATION_SHEET_RANGE` | variable | tab name, default `Form Responses 1` |
 
 ## Local run
 
@@ -41,8 +38,8 @@ STORAGE_BACKEND=local STORAGE_ROOT=local-store python app.py
 ```
 
 Put a `teams.csv` with the columns `team_name,contact_email,member_emails,tracks,aliases,registered_at`
-in `local-store/` to have teams to match against (the fallback when no registration sheet is configured).
-An optional `aliases.csv` (`team_name,aliases`) adds hand-maintained spelling aliases in either mode. `mast_validate/` is a vendored copy of the
+in `local-store/` to have teams to match against, or a raw `responses.csv` form export (preferred when present).
+An optional `aliases.csv` (`team_name,aliases`) adds hand-maintained spelling aliases. `mast_validate/` is a vendored copy of the
 validator package, refreshed by the organizers' deploy script.
 
 ## Storage layout (private repo)

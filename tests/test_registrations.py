@@ -38,33 +38,6 @@ def test_rows_to_teams_bad_headers():
     assert rows_to_teams([["a", "b"], ["1", "2"]]) == ([], ["unexpected headers: ['a', 'b']..."])
 
 
-class FakeSheet:
-    def __init__(self, rows=None, fail=False):
-        self.rows, self.fail, self.calls = rows, fail, 0
-
-    def fetch(self):
-        self.calls += 1
-        if self.fail:
-            raise RuntimeError("sheet down")
-        return self.rows
-
-
-def test_roster_from_sheet_and_fallbacks(tmp_path):
-    st = LocalStorage(tmp_path)
-    st.commit([Add("teams.csv", "team_name,track,contact_email,member_emails,aliases,registered_at\nCsvTeam,indic,c@x.org,c@x.org,,t\n"),
-               Add("aliases.csv", "team_name,aliases\nZeroOne,zero one;01\n")], "seed")
-    sheet = FakeSheet(ROWS)
-    r = Roster(st, ttl_seconds=0, sheet=sheet)
-    assert r.match("ZeroOne").team.name == "zeroone" and r.match("01").team.name == "zeroone" and r.source == "sheet"
-    assert r.match("CsvTeam").team is None                     # the sheet is the source, not the csv
-    sheet.fail = True
-    assert r.match("ZeroOne").team is not None and "sheet down" in r.last_error   # last good roster kept
-    r2 = Roster(st, ttl_seconds=0, sheet=FakeSheet(fail=True))
-    assert r2.match("CsvTeam").team.name == "CsvTeam" and r2.source == "teams.csv"  # nothing cached: csv fallback
-    r3 = Roster(st, ttl_seconds=0)
-    assert r3.match("CsvTeam").team is not None and r3.source == "teams.csv"
-
-
 def test_roster_from_responses_csv(tmp_path):
     import csv, io
     buf = io.StringIO(); csv.writer(buf).writerows(ROWS)

@@ -1,9 +1,8 @@
 """Team roster, cached ~60 s, matched by normalized name or alias.
 
-Sources, in order of preference: the registration sheet read live through a
-Google service account; ``responses.csv`` in the private dataset, a raw export
-pushed by an Apps Script on every form submission (no Google Cloud needed);
-and ``teams.csv``, a manual import. All keep the list private.
+Sources, in order of preference: ``responses.csv`` in the private dataset, a
+raw export pushed by an Apps Script on every form submission; and ``teams.csv``,
+a manual import. Both keep the list private.
 
 Normalization ignores case, punctuation, repeated spaces and a leading "team ";
 word order is significant ("Sahel Test" and "Test Sahel" are different teams).
@@ -14,7 +13,6 @@ from __future__ import annotations
 import csv
 import difflib
 import io
-import json
 import logging
 import re
 import time
@@ -110,52 +108,14 @@ def parse_roster(text: str) -> list[Team]:
     return list(by_key.values())
 
 
-class SheetSource:
-    """Reads the registration responses sheet through a Google service account (read-only scope)."""
-
-    SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
-
-    def __init__(self, sheet_id: str, range_: str, service_account_info: dict, timeout: int = 20) -> None:
-        self.sheet_id, self.range_, self.info, self.timeout = sheet_id, range_, service_account_info, timeout
-        self._creds = None
-
-    def _token(self) -> str:
-        from google.auth.transport.requests import Request
-        from google.oauth2 import service_account
-
-        if self._creds is None:
-            self._creds = service_account.Credentials.from_service_account_info(self.info, scopes=[self.SCOPE])
-        if not self._creds.valid:
-            self._creds.refresh(Request())
-        return self._creds.token
-
-    def fetch(self) -> list[list[str]]:
-        import requests
-        from urllib.parse import quote
-
-        url = f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}/values/{quote(self.range_, safe='')}"
-        r = requests.get(url, headers={"Authorization": f"Bearer {self._token()}"}, timeout=self.timeout)
-        r.raise_for_status()
-        return r.json().get("values", [])
-
-    @classmethod
-    def from_settings(cls, settings) -> "Optional[SheetSource]":
-        if not (settings.google_service_account_json and settings.registration_sheet_id):
-            return None
-        info = json.loads(settings.google_service_account_json)
-        return cls(settings.registration_sheet_id, settings.registration_sheet_range, info)
-
-
 class Roster:
-    def __init__(self, storage, ttl_seconds: int = 60, sheet: "Optional[SheetSource]" = None) -> None:
+    def __init__(self, storage, ttl_seconds: int = 60) -> None:
         self.storage = storage
         self.ttl = ttl_seconds
-        self.sheet = sheet
         self._teams: list[Team] = []
         self._index: dict[str, Team] = {}
         self._loaded_at = 0.0
         self.source = "none"
-        self.last_error: Optional[str] = None
 
     def _aliases(self) -> dict[str, str]:
         raw = self.storage.read(ALIASES_PATH)
@@ -164,21 +124,6 @@ class Roster:
         return {(r.get("team_name") or "").strip(): (r.get("aliases") or "") for r in csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))}
 
     def _load(self) -> list[Team]:
-        if self.sheet is not None:
-            try:
-                from .registrations import rows_to_teams
-
-                teams, notes = rows_to_teams(self.sheet.fetch(), self._aliases())
-                for n in notes:
-                    log.info("registration sheet: %s", n)
-                self.source, self.last_error = "sheet", None
-                return teams
-            except Exception as exc:  # keep serving the last good roster, or fall back to the CSV
-                self.last_error = f"{type(exc).__name__}: {exc}"
-                log.warning("registration sheet unavailable (%s); using %s", self.last_error,
-                            "previous roster" if self._teams else ROSTER_PATH)
-                if self._teams:
-                    return self._teams
         raw = self.storage.read(RESPONSES_PATH)
         if raw:
             try:

@@ -28,7 +28,7 @@ from portal.mailer import send_receipt
 from portal import tmpfiles
 from portal.ratelimit import Limiter, client_address
 from portal.rejected import RejectedLog
-from portal.roster import Roster, SheetSource, Team
+from portal.roster import Roster, Team
 from portal.slots import Meta, Prepared, SlotError, SlotService, prepare_stream
 from portal.storage import make_storage
 
@@ -37,8 +37,7 @@ log = logging.getLogger("portal")
 
 settings = Settings.from_env()
 storage = make_storage(settings)
-roster = Roster(storage, settings.roster_ttl_seconds, sheet=SheetSource.from_settings(settings))
-log.info("roster source: %s", "registration sheet" if roster.sheet else "teams.csv")
+roster = Roster(storage, settings.roster_ttl_seconds)
 slots = SlotService(storage, max_slots=settings.max_slots, max_uploads=settings.max_uploads_per_key,
                     attempts=settings.commit_attempts)
 rejected = RejectedLog(storage)

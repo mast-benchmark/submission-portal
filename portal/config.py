@@ -48,9 +48,6 @@ class Settings:
     rate_validate_per_ip: Limit = Limit(20, 600)     # RATE_VALIDATE_PER_IP, e.g. '20/600' or 'off'
     rate_record_per_ip: Limit = Limit(10, 3600)      # RATE_RECORD_PER_IP
     rate_record_per_team: Limit = Limit(15, 3600)    # RATE_RECORD_PER_TEAM
-    google_service_account_json: Optional[str] = None  # secret: the service-account key JSON, verbatim
-    registration_sheet_id: Optional[str] = None        # variable: id from the responses sheet URL
-    registration_sheet_range: str = "Form Responses 1"  # variable: tab name (or A1 range)
 
     @property
     def email_enabled(self) -> bool:
@@ -82,7 +79,4 @@ class Settings:
             rate_validate_per_ip=_limit("RATE_VALIDATE_PER_IP", "20/600"),
             rate_record_per_ip=_limit("RATE_RECORD_PER_IP", "10/3600"),
             rate_record_per_team=_limit("RATE_RECORD_PER_TEAM", "15/3600"),
-            google_service_account_json=_env("GOOGLE_SERVICE_ACCOUNT_JSON"),
-            registration_sheet_id=_env("REGISTRATION_SHEET_ID"),
-            registration_sheet_range=_env("REGISTRATION_SHEET_RANGE", "Form Responses 1"),
         )
