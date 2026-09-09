@@ -46,7 +46,6 @@ limit_record_ip = Limiter(settings.rate_record_per_ip)
 limit_record_team = Limiter(settings.rate_record_per_team)
 
 TRACK_LABELS = {"multilingual": "MAST Multilingual (15 languages)", "indic": "MAST Indic (9 languages)"}
-SYSTEM_TYPES = ["Agentic", "Retrieval-only"]
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ACTION_TEXT = {"slot": "→ slot {slot}", "replace": "replaces slot {slot} ({old})", "unchanged": "unchanged: {note}",
                "skipped_full": "skipped: {note}", "capped": "not recorded: {note}"}
@@ -71,8 +70,8 @@ each run is. Every file is checked against the official query ids and the corpus
 errors is never recorded.
 Deadline: **{deadline_text()}**.
 
-Check files offline first with the `mast-validate` command-line tool from the track announcement (same checks,
-same output). Format spec: [{SITE_URL}#submission-format]({SITE_URL}#submission-format).
+Check files offline first with [`mast-validate`](https://github.com/mast-benchmark/mast-validate) (same checks,
+same output). Format and guidelines: [{SITE_URL}#submission-format]({SITE_URL}#submission-format).
 
 > **Working notes are not submitted here.** Each team submits one working note per track (ACM format,
 > 2–4 pages) centrally through the [FIRE 2026]({FIRE_URL}) submission system, as announced by FIRE.
@@ -91,38 +90,37 @@ def _upload_path(file) -> Optional[str]:
     return path if path and os.path.isfile(path) else None
 
 
-def _common_checks(team_name, track, system_type, email, file):
+def _common_checks(team_name, track, email, file):
     """Shared preamble. Returns (error_message or None, team, path)."""
     if settings.is_closed():
         return closed_message(), None, None
-    fields = [("team name", team_name), ("track", track), ("system type", system_type),
-              ("contact email", email), ("file", file)]
+    fields = [("team name", team_name), ("track", track), ("contact email", email), ("file", file)]
     missing = [label for label, v in fields if not v or (isinstance(v, str) and not v.strip())]
     if missing:
         return f"Please fill in: {', '.join(missing)}.", None, None
     if not EMAIL_RE.match(email.strip()):
         return "The contact email does not look like an email address.", None, None
-    if system_type == "Retrieval-only":
-        return ("**Retrieval-only submissions are not supported yet.** The submission format for retrieval-only "
-                f"runs is still being defined; watch the mailing list or email {ORGANIZER_EMAIL}. Nothing was recorded.",
-                None, None)
     m = roster.match(team_name)
     if not m.team:
         rejected.add(team_name, track)
         hint = f" Did you mean **{m.suggestion}**?" if m.suggestion else ""
         return (f"No registered team matches **{team_name.strip()}**.{hint} Team names must match the "
                 f"registration form. If you registered under another spelling, email {ORGANIZER_EMAIL}.", None, None)
+    team = m.team
+    if team.tracks and track not in team.tracks:
+        log.warning("track refused team=%s registered=%s requested=%s", team.slug, team.tracks, track)
+        return (f"**{team.name}** is registered for the **{' and '.join(team.tracks)}** track"
+                f"{'s' if len(team.tracks) > 1 else ''} only; this upload is for **{track}**. "
+                f"Email {ORGANIZER_EMAIL} to add a track to your registration. Nothing was recorded.", None, None)
+    if not team.knows_email(email):
+        log.warning("email refused team=%s", team.slug)
+        return (f"The contact email is not one of the addresses registered for **{team.name}**. Use the address of a "
+                f"team member from the registration form, or email {ORGANIZER_EMAIL} to update it. Nothing was recorded.",
+                None, None)
     path = _upload_path(file)
     if not path:
-        return "The upload did not arrive; please try again.", m.team, None
-    return None, m.team, path
-
-
-def _track_note(team: Team, track: str) -> str:
-    if team.tracks and track not in team.tracks:
-        return (f"\n\nNote: the registration for *{team.name}* lists only the **{', '.join(team.tracks)}** track; "
-                f"this upload is for **{track}**. Proceeding.")
-    return ""
+        return "The upload did not arrive; please try again.", team, None
+    return None, team, path
 
 
 def _coverage_line(track: str, team: Team) -> str:
@@ -203,7 +201,7 @@ def _too_many(what: str, limiter: Limiter, retry: int) -> str:
             f"Try again in about {max(1, retry // 60)} minute{'s' if retry >= 120 else ''}. Nothing was recorded.")
 
 
-def on_validate(team_name, track, system_type, email, replace_oldest, file, request: gr.Request = None):
+def on_validate(team_name, track, email, replace_oldest, file, request: gr.Request = None):
     """Validate one .jsonl(.gz) or a zip of them; show what would be recorded where."""
     def fail(msg: str, report_path: Optional[str] = None):
         return msg, gr.update(value=report_path, visible=report_path is not None), gr.update(visible=False), None
@@ -214,7 +212,7 @@ def on_validate(team_name, track, system_type, email, replace_oldest, file, requ
     if not allowed:
         log.warning("rate limit: validate addr=%s", addr)
         return fail(_too_many("validations from one address", limit_validate_ip, retry))
-    err, team, path = _common_checks(team_name, track, system_type, email, file)
+    err, team, path = _common_checks(team_name, track, email, file)
     if err:
         return fail(err)
     original = os.path.basename(path)
@@ -245,7 +243,7 @@ def on_validate(team_name, track, system_type, email, replace_oldest, file, requ
                           for f in rd["findings"])
     head = (f"### {'✓' if items else '✗'} {len(items)} of {len(present)} file{'s' if len(present) != 1 else ''} ready to record — team **{team.name}**\n"
             f"{_coverage_line(track, team)}\n\n{table}\n\n" + (zip_level + "\n\n" if zip_level else ""))
-    details = f"<details><summary>Full validator output</summary>\n\n```text\n{text}```\n</details>{_track_note(team, track)}"
+    details = f"<details><summary>Full validator output</summary>\n\n```text\n{text}```\n</details>"
     if not writable:
         tmpfiles.remove(p.gz_path for p in items.values())
         why = "**Nothing to record:** " + ("no file passed validation. Fix the errors and upload again." if not items
@@ -254,7 +252,7 @@ def on_validate(team_name, track, system_type, email, replace_oldest, file, requ
     note = ("Files with errors are **not** recorded; fix them and upload again (unchanged languages are skipped automatically).\n\n"
             if any(fr["errors"] for fr in present) else "")
     state = {"team": team, "track": track, "items": items, "replace_oldest": bool(replace_oldest),
-             "meta": Meta(system_type=system_type, submitter_email=email.strip())}
+             "meta": Meta(submitter_email=email.strip())}
     return (head + note + details, gr.update(value=report_path, visible=True),
             gr.update(visible=True, value=f"Record {len(writable)} language{'s' if len(writable) != 1 else ''}"), state)
 
@@ -306,7 +304,7 @@ def on_submit(state, request: gr.Request = None):
                "unchanged": "unchanged", "skipped_full": "skipped: full", "capped": "not recorded: cap"}[i["action"]]
         rows.append(f"| {display_name(i['language'])} | {res} | {i['slot'] or ''} | `{i['receipt_id'] or ''}` | `{(i['sha256'] or '')[:12]}` |")
     body = (f"MAST 2026 submission receipt\n\nTeam: {team.name}\nTrack: {track}\nReceipt id: {summary['bulk_receipt_id']}\n"
-            f"Uploaded at: {summary['uploaded_at']}\nSystem type: {summary['system_type']}\nSubmitted by: {summary['submitter_email']}\n\n"
+            f"Uploaded at: {summary['uploaded_at']}\nSubmitted by: {summary['submitter_email']}\n\n"
             + "\n".join(f"{i['language']}: {i['action']}" + (f" slot {i['slot']} receipt {i['receipt_id']} sha256 {i['sha256']} llm {i['llm']} retriever {i['retriever']}"
                                                               if i['receipt_id'] else f" ({i['note']})") for i in summary["items"]) + "\n")
     mailed = send_receipt(settings, [summary["submitter_email"], *team.notify_emails],
@@ -330,6 +328,9 @@ RULES = f"""
   (`llm` and `retriever` are compared exactly, case-sensitive). Filenames carry no meaning. An archive (zip or
   tar) may hold one file per language, named however you like.
 * Team names are matched ignoring case and punctuation, but word order matters: "Sahel Test" is not "Test Sahel".
+  The track must be one your team registered for, and the contact email must be one of the addresses on the
+  registration form.
+* Only agentic runs are accepted; there is no retrieval-only submission.
 * Every upload gets a receipt id and a sha256 per language. Keep the receipt. Organizers evaluate exactly the
   stored bytes.
 * Errors block a file; warnings do not, but each one costs score. `Exact Answer:` must appear in the final
@@ -348,9 +349,8 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
         with gr.Column():
             team_name = gr.Textbox(label="Team name", placeholder="as on the registration form")
             track = gr.Radio(choices=[(v, k) for k, v in TRACK_LABELS.items()], label="Track", value=None)
-            system_type = gr.Radio(choices=SYSTEM_TYPES, label="System type", value=None)
+            email = gr.Textbox(label="Contact email", placeholder="an address from your team's registration")
         with gr.Column():
-            email = gr.Textbox(label="Contact email", placeholder="receipt goes here and to the team contact")
             upload = gr.File(label="Run file(s): one .jsonl / .jsonl.gz, or a .zip / .tar / .tar.gz / .tgz with one per language",
                              file_types=[".jsonl", ".gz", ".zip", ".tar", ".tgz"], type="filepath")
             replace_oldest = gr.Checkbox(label="Replace the oldest run for languages whose 3 slots are already full", value=False)
@@ -366,7 +366,7 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
     gr.Markdown("<small>Registration closes with the run deadline. The team roster refreshes within a minute of an update.</small>")
 
     demo.load(on_load, outputs=[closed_banner])
-    validate_btn.click(on_validate, inputs=[team_name, track, system_type, email, replace_oldest, upload],
+    validate_btn.click(on_validate, inputs=[team_name, track, email, replace_oldest, upload],
                        outputs=[status, report_dl, submit_btn, state])
     submit_btn.click(on_submit, inputs=[state], outputs=[result, receipt_dl, submit_btn, state])
 

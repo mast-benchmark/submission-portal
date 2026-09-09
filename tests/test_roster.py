@@ -50,3 +50,9 @@ def test_roster_refreshes_after_update(tmp_path):
 def test_missing_roster_is_empty(tmp_path):
     r = Roster(LocalStorage(tmp_path), ttl_seconds=0)
     assert r.size() == 0 and r.match("anyone").team is None
+
+
+def test_registered_emails():
+    t = parse_roster(CSV)[0]
+    assert t.all_emails == {"a@uw.ca", "b@uw.ca"}
+    assert t.knows_email(" B@UW.CA ") and not t.knows_email("x@uw.ca") and not t.knows_email("")

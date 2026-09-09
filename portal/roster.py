@@ -47,8 +47,15 @@ class Team:
 
     @property
     def notify_emails(self) -> list[str]:
-        out = [self.contact_email] if self.contact_email else []
-        return out
+        return [self.contact_email] if self.contact_email else []
+
+    @property
+    def all_emails(self) -> set[str]:
+        """Every address registered for the team, lower-cased."""
+        return {e.strip().lower() for e in [self.contact_email, *self.member_emails] if e and e.strip()}
+
+    def knows_email(self, email: str) -> bool:
+        return (email or "").strip().lower() in self.all_emails
 
 
 @dataclass

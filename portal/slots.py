@@ -143,8 +143,8 @@ def prepare(path: Path, original_filename: str, report: dict[str, Any]) -> Prepa
 @dataclass
 class Meta:
     """What the form adds on top of the file: the file itself says llm, retriever and language."""
-    system_type: str
     submitter_email: str
+    system_type: str = "agentic"   # only agentic runs are accepted
 
 
 class SlotKey:

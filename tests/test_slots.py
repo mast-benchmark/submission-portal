@@ -6,7 +6,7 @@ import pytest
 from portal.slots import Meta, SlotError, SlotKey, SlotService, prepare
 from portal.storage import Conflict, LocalStorage
 
-META = Meta(system_type="Agentic", submitter_email="a@x.org")
+META = Meta(submitter_email="a@x.org")
 
 
 def report(warnings=0, records=50):
