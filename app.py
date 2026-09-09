@@ -28,7 +28,7 @@ from portal.mailer import send_receipt
 from portal import tmpfiles
 from portal.ratelimit import Limiter, client_address
 from portal.rejected import RejectedLog
-from portal.roster import Roster, Team
+from portal.roster import Roster, SheetSource, Team
 from portal.slots import Meta, Prepared, SlotError, SlotService, prepare_stream
 from portal.storage import make_storage
 
@@ -37,7 +37,8 @@ log = logging.getLogger("portal")
 
 settings = Settings.from_env()
 storage = make_storage(settings)
-roster = Roster(storage, settings.roster_ttl_seconds)
+roster = Roster(storage, settings.roster_ttl_seconds, sheet=SheetSource.from_settings(settings))
+log.info("roster source: %s", "registration sheet" if roster.sheet else "teams.csv")
 slots = SlotService(storage, max_slots=settings.max_slots, max_uploads=settings.max_uploads_per_key,
                     attempts=settings.commit_attempts)
 rejected = RejectedLog(storage)
@@ -363,7 +364,7 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
     state = gr.State(None)
     with gr.Accordion("Rules and help", open=False):
         gr.Markdown(RULES)
-    gr.Markdown("<small>Registration closes with the run deadline. The team roster refreshes within a minute of an update.</small>")
+    gr.Markdown("<small>Registration closes with the run deadline. New registrations are recognized within a minute.</small>")
 
     demo.load(on_load, outputs=[closed_banner])
     validate_btn.click(on_validate, inputs=[team_name, track, email, replace_oldest, upload],
