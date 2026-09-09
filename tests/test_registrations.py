@@ -60,3 +60,14 @@ def test_roster_from_sheet_and_fallbacks(tmp_path):
     assert r2.match("CsvTeam").team.name == "CsvTeam" and r2.source == "teams.csv"  # nothing cached: csv fallback
     r3 = Roster(st, ttl_seconds=0)
     assert r3.match("CsvTeam").team is not None and r3.source == "teams.csv"
+
+
+def test_roster_from_responses_csv(tmp_path):
+    import csv, io
+    buf = io.StringIO(); csv.writer(buf).writerows(ROWS)
+    st = LocalStorage(tmp_path)
+    st.commit([Add("responses.csv", buf.getvalue()),
+               Add("teams.csv", "team_name,contact_email,member_emails,tracks,aliases,registered_at\nCsvTeam,c@x.org,c@x.org,indic,,t\n")], "seed")
+    r = Roster(st, ttl_seconds=0)
+    assert r.match("zeroone").team.member_emails == ["a@x.org", "b@x.org", "c@x.org", "d@x.org"] and r.source == "responses.csv"
+    assert r.match("CsvTeam").team is None            # responses.csv wins over the manual import

@@ -1,8 +1,9 @@
 """Team roster, cached ~60 s, matched by normalized name or alias.
 
-Source is either the registration sheet itself (read live through a Google
-service account, so a team can submit a minute after registering and the list
-is never published) or ``teams.csv`` in the private dataset as a fallback.
+Sources, in order of preference: the registration sheet read live through a
+Google service account; ``responses.csv`` in the private dataset, a raw export
+pushed by an Apps Script on every form submission (no Google Cloud needed);
+and ``teams.csv``, a manual import. All keep the list private.
 
 Normalization ignores case, punctuation, repeated spaces and a leading "team ";
 word order is significant ("Sahel Test" and "Test Sahel" are different teams).
@@ -22,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 ROSTER_PATH = "teams.csv"
+RESPONSES_PATH = "responses.csv"   # raw form export pushed by the Apps Script (see docs); parsed with registrations.rows_to_teams
 ALIASES_PATH = "aliases.csv"   # optional: team_name,aliases (";"-separated), hand-maintained in the private dataset
 log = logging.getLogger("portal.roster")
 COLUMNS = ["team_name", "contact_email", "member_emails", "tracks", "aliases", "registered_at"]
@@ -159,6 +161,20 @@ class Roster:
                             "previous roster" if self._teams else ROSTER_PATH)
                 if self._teams:
                     return self._teams
+        raw = self.storage.read(RESPONSES_PATH)
+        if raw:
+            try:
+                from .registrations import rows_to_teams
+
+                rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig"))))
+                teams, notes = rows_to_teams(rows, self._aliases())
+                for n in notes:
+                    log.info("responses.csv: %s", n)
+                if teams:
+                    self.source = RESPONSES_PATH
+                    return teams
+            except Exception as exc:
+                log.warning("responses.csv unreadable (%s); falling back to %s", exc, ROSTER_PATH)
         raw = self.storage.read(ROSTER_PATH)
         self.source = ROSTER_PATH
         return parse_roster(raw.decode("utf-8-sig")) if raw else []
