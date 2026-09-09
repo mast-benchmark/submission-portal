@@ -13,6 +13,7 @@ DEFAULT_DEADLINE = "2026-09-16T11:59:59+00:00"   # Sep 15, 2026, end of day AoE 
 ORGANIZER_EMAIL = "mast-organizers@googlegroups.com"
 FIRE_URL = "http://fire.irsi.res.in/"
 SITE_URL = "https://mast-benchmark.github.io/"
+REGISTRATION_URL = "https://forms.gle/MBLHJcG7RXrgj42G8"
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:

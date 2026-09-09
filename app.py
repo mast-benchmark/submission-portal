@@ -23,7 +23,7 @@ from mast_validate import __version__ as validator_version
 from mast_validate.languages import TRACKS, display_name
 from mast_validate.report import render
 from mast_validate.runner import UsageProblem, archive_kind, single_file_report, validate_archive
-from portal.config import FIRE_URL, ORGANIZER_EMAIL, SITE_URL, Settings
+from portal.config import FIRE_URL, ORGANIZER_EMAIL, REGISTRATION_URL, SITE_URL, Settings
 from portal.mailer import send_receipt
 from portal import tmpfiles
 from portal.ratelimit import Limiter, client_address
@@ -104,9 +104,11 @@ def _common_checks(team_name, track, email, file):
     m = roster.match(team_name)
     if not m.team:
         rejected.add(team_name, track)
-        hint = f" Did you mean **{m.suggestion}**?" if m.suggestion else ""
-        return (f"No registered team matches **{team_name.strip()}**.{hint} Team names must match the "
-                f"registration form. If you registered under another spelling, email {ORGANIZER_EMAIL}.", None, None)
+        hint = (f" Did you mean **{m.suggestion}**?" if m.suggestion
+                else " Make sure the team name is exactly as you registered it.")
+        return (f"No registered team matches **{team_name.strip()}**.{hint} "
+                f"If your team is new, [register here]({REGISTRATION_URL}) and try again in two minutes so the "
+                f"registration propagates. Still not recognized? Email {ORGANIZER_EMAIL}.", None, None)
     team = m.team
     if team.tracks and track not in team.tracks:
         log.warning("track refused team=%s registered=%s requested=%s", team.slug, team.tracks, track)
