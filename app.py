@@ -330,7 +330,7 @@ RULES = f"""
 * Team names are matched ignoring case and punctuation, but word order matters: "Sahel Test" is not "Test Sahel".
   The track must be one your team registered for, and the contact email must be one of the addresses on the
   registration form.
-* Only agentic runs are accepted; there is no retrieval-only submission.
+* Only agentic runs are accepted.
 * Every upload gets a receipt id and a sha256 per language. Keep the receipt. Organizers evaluate exactly the
   stored bytes.
 * Errors block a file; warnings do not, but each one costs score. `Exact Answer:` must appear in the final
