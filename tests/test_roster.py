@@ -10,6 +10,8 @@ Team Bengaluru,x@iisc.in,x@iisc.in,indic,,2026-07-01
 def test_normalize_and_slug():
     assert normalize_name("  Team  Waterloo-NLP! ") == "waterloo nlp"
     assert normalize_name("TEAM") == "team"  # a team literally called Team keeps its name
+    assert normalize_name("mast_agentic_ai") == normalize_name("mast agentic ai") == "mast agentic ai"
+    assert slugify("mast_agentic_ai") == "mast-agentic-ai"
     assert slugify("Waterloo NLP") == "waterloo-nlp"
     assert slugify("Team Bengaluru") == "bengaluru"
 

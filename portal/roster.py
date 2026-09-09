@@ -21,7 +21,7 @@ COLUMNS = ["team_name", "contact_email", "member_emails", "tracks", "aliases", "
 
 def normalize_name(name: str) -> str:
     s = unicodedata.normalize("NFKC", name or "").lower()
-    s = re.sub(r"[^\w\s]", " ", s)
+    s = re.sub(r"[^\w\s]|_", " ", s)   # underscore is a word character in regex; treat it as punctuation too
     s = re.sub(r"\s+", " ", s).strip()
     if s.startswith("team "):
         s = s[5:].strip()
