@@ -3,3 +3,8 @@ __pycache__/
 .pytest_cache/
 local-store/
 *.log
+
+# private data never belongs here
+teams*.csv
+*responses*.csv
+*.xlsx
