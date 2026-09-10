@@ -203,7 +203,7 @@ def _results_table(files: list[dict[str, Any]], results: dict[str, str]) -> str:
 
 
 RESULT_TEXT = {"slot": "**submitted** → slot {slot}", "replace": "**submitted** → slot {slot}, replaced the oldest run",
-               "unchanged": "unchanged: {note}", "skipped_full": "not submitted: {note}", "capped": "not submitted: {note}"}
+               "unchanged": "unchanged, identical to slot {slot}", "skipped_full": "not submitted: {note}", "capped": "not submitted: {note}"}
 
 
 def on_submit(team_name, track, email, replace_oldest, file, request: gr.Request = None):
@@ -346,5 +346,7 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
     submit_btn.click(on_submit, inputs=[team_name, track, email, replace_oldest, upload],
                      outputs=[status, report_dl, receipt_dl])
 
+CSS = ".prose table { width: 100%; } .prose th { white-space: nowrap; } .prose td { vertical-align: top; }"
+
 if __name__ == "__main__":
-    demo.queue(default_concurrency_limit=4).launch(max_file_size="200mb", show_error=True)
+    demo.queue(default_concurrency_limit=4).launch(max_file_size="200mb", show_error=True, css=CSS)
