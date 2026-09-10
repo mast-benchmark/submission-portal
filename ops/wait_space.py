@@ -1,6 +1,6 @@
 import sys, time
-sys.path.insert(0, "/mnt/users/s8sharif/mast")
-from ops.deploy import load_env
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from deploy import load_env
 from huggingface_hub import HfApi
 api = HfApi(token=load_env()["HF_TOKEN"]); t0 = time.time(); time.sleep(6); stage = None
 while time.time() - t0 < 420:
