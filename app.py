@@ -202,7 +202,7 @@ def _results_table(files: list[dict[str, Any]], results: dict[str, str]) -> str:
     return "\n".join(rows)
 
 
-RESULT_TEXT = {"slot": "**submitted** → slot {slot} · receipt `{receipt}`", "replace": "**submitted** → slot {slot}, replaced the oldest run · receipt `{receipt}`",
+RESULT_TEXT = {"slot": "**submitted** → slot {slot}", "replace": "**submitted** → slot {slot}, replaced the oldest run",
                "unchanged": "unchanged: {note}", "skipped_full": "not submitted: {note}", "capped": "not submitted: {note}"}
 
 
