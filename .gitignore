@@ -8,3 +8,6 @@ local-store/
 teams*.csv
 *responses*.csv
 *.xlsx
+ops/.env
+ops/*.csv
+ops/*.log
