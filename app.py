@@ -2,7 +2,8 @@
 
 One form: upload one ``.jsonl`` (or ``.jsonl.gz``), or an archive (zip or tar)
 holding one such file per language. Language, LLM and retriever are read from the records.
-Every clean file goes to its language's next free slot in one atomic commit.
+One button validates and records: every clean file goes to its language's next
+free slot in one atomic commit, and the page shows either the errors or the receipt.
 Files are validated with ``mast_validate`` in memory; only clean files reach
 storage. Team names are honor-system against a private roster never rendered.
 """
@@ -47,8 +48,6 @@ limit_record_team = Limiter(settings.rate_record_per_team)
 
 TRACK_LABELS = {"multilingual": "MAST Multilingual (15 languages)", "indic": "MAST Indic (9 languages)"}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-ACTION_TEXT = {"slot": "→ slot {slot}", "replace": "replaces slot {slot} ({old})", "unchanged": "unchanged: {note}",
-               "skipped_full": "skipped: {note}", "capped": "not recorded: {note}"}
 
 
 def deadline_text() -> str:
@@ -143,20 +142,6 @@ def _verdict(fr: dict[str, Any]) -> str:
     return "✓" + (f" {fr['warnings']} warning{'s' if fr['warnings'] != 1 else ''}" if fr["warnings"] else "")
 
 
-def _plan_table(files: list[dict[str, Any]], actions: dict[str, str]) -> str:
-    rows = ["| Language | File | Records | LLM · retriever | Validation | Action |", "|---|---|---|---|---|---|"]
-    for fr in files:
-        lang = fr["language"]
-        name = f"`{fr['name']}`" if fr["present"] else ""
-        meta = f"{fr.get('llm') or ''} · {fr.get('retriever') or ''}" if fr["present"] else ""
-        if not fr["present"]:
-            action = "— (no file in the archive)"
-        else:
-            action = actions.get(lang or "", "not recorded (errors)")
-        rows.append(f"| {display_name(lang) if lang else '?'} | {name} | {fr['records'] if fr['present'] else ''} | {meta} | {_verdict(fr)} | {action} |")
-    return "\n".join(rows)
-
-
 def _prepare_members(path: str, report, rd: dict[str, Any], track: str) -> tuple[dict[str, Prepared], dict[str, str]]:
     """Stream every clean member (or the single file) into a temp gzip. Returns (prepared by language, failures)."""
     items: dict[str, Prepared] = {}
@@ -204,26 +189,42 @@ def _too_many(what: str, limiter: Limiter, retry: int) -> str:
             f"Try again in about {max(1, retry // 60)} minute{'s' if retry >= 120 else ''}. Nothing was recorded.")
 
 
-def on_validate(team_name, track, email, replace_oldest, file, request: gr.Request = None):
-    """Validate one .jsonl(.gz) or a zip of them; show what would be recorded where."""
+def _results_table(files: list[dict[str, Any]], results: dict[str, str]) -> str:
+    rows = ["| Language | File | Records | LLM · retriever | Validation | Result |", "|---|---|---|---|---|---|"]
+    for fr in files:
+        lang = fr["language"]
+        if not fr["present"]:
+            rows.append(f"| {display_name(lang)} | | | | missing | — (no file in the archive) |")
+            continue
+        meta = f"{fr.get('llm') or ''} · {fr.get('retriever') or ''}"
+        result = results.get(lang or "", "not submitted (errors)")
+        rows.append(f"| {display_name(lang) if lang else '?'} | `{fr['name']}` | {fr['records']} | {meta} | {_verdict(fr)} | {result} |")
+    return "\n".join(rows)
+
+
+RESULT_TEXT = {"slot": "**submitted** → slot {slot} · receipt `{receipt}`", "replace": "**submitted** → slot {slot}, replaced the oldest run · receipt `{receipt}`",
+               "unchanged": "unchanged: {note}", "skipped_full": "not submitted: {note}", "capped": "not submitted: {note}"}
+
+
+def on_submit(team_name, track, email, replace_oldest, file, request: gr.Request = None):
+    """One step: validate the upload and record every clean file. Shows either the errors or the receipt."""
+    hidden = gr.update(visible=False)
+
     def fail(msg: str, report_path: Optional[str] = None):
-        return msg, gr.update(value=report_path, visible=report_path is not None), gr.update(visible=False), None
+        return msg, gr.update(value=report_path, visible=report_path is not None), hidden
 
     tmpfiles.sweep()
     addr = client_address(request)
     allowed, retry = limit_validate_ip.hit(addr)
     if not allowed:
-        log.warning("rate limit: validate addr=%s", addr)
-        return fail(_too_many("validations from one address", limit_validate_ip, retry))
+        log.warning("rate limit: submit addr=%s", addr)
+        return fail(_too_many("submissions from one address", limit_validate_ip, retry))
     err, team, path = _common_checks(team_name, track, email, file)
     if err:
         return fail(err)
     original = os.path.basename(path)
     try:
-        if archive_kind(path):
-            report = validate_archive(path, track=track)
-        else:
-            report = single_file_report(path, track=track, lang=None, name=original)
+        report = validate_archive(path, track=track) if archive_kind(path) else single_file_report(path, track=track, lang=None, name=original)
     except UsageProblem as exc:
         return fail(f"Could not validate: {exc}")
     log.info("validated team=%s track=%s upload=%s size=%d status=%s errors=%d warnings=%d files=%d", team.slug, track,
@@ -231,93 +232,65 @@ def on_validate(team_name, track, email, replace_oldest, file, request: gr.Reque
     rd = report.to_dict()
     report_path = _tmp_json(f"mast-report-{track}-", rd)
     text = render(report, color=False, unicode=True)
-    items, unreadable = _prepare_members(path, report, rd, track)
-    manifests, _ = slots.manifests(track, team.slug, team.name, sorted(items)) if items else ({}, "")
-    plan = slots.plan(manifests, items, replace_oldest=bool(replace_oldest)) if items else []
-    actions = {lang: f"not recorded (unreadable: {why[:60]})" for lang, why in unreadable.items()}
-    for it in plan:
-        old = it.replaced or {}
-        actions[it.lang] = ACTION_TEXT[it.action].format(
-            slot=it.slot, note=it.note, old=f"{old.get('llm', '')}, {old.get('uploaded_at', '')[:10]}")
-    writable = [it for it in plan if it.writes]
     present = [fr for fr in rd["files"] if fr["present"]]
-    table = _plan_table(rd["files"], actions)
     zip_level = "\n".join(f"* {f['message']}" + (f" (e.g. {', '.join(f['examples'][:5])})" if f["examples"] else "")
                           for f in rd["findings"])
-    head = (f"### {'✓' if items else '✗'} Validation: {len(items)} of {len(present)} file{'s' if len(present) != 1 else ''} passed — team **{team.name}**\n"
-            + ("**Nothing is submitted yet. Press the Submit button below to record the passing file(s).**\n\n" if items else "")
-            + f"{_coverage_line(track, team)}\n\n{table}\n\n" + (zip_level + "\n\n" if zip_level else ""))
     details = f"<details><summary>Full validator output</summary>\n\n```text\n{text}```\n</details>"
-    if not writable:
+    items, unreadable = _prepare_members(path, report, rd, track)
+    results = {lang: f"not submitted (unreadable: {why[:60]})" for lang, why in unreadable.items()}
+
+    def page(headline: str, note: str = "") -> str:
+        return (f"### {headline}\n\n" + (note + "\n\n" if note else "") + f"{_coverage_line(track, team)}\n\n"
+                f"{_results_table(rd['files'], results)}\n\n" + (zip_level + "\n\n" if zip_level else "") + details)
+
+    if not items:
         tmpfiles.remove(p.gz_path for p in items.values())
-        why = "**Nothing to submit:** " + ("no file passed validation. Fix the errors and upload again." if not items
-                                            else "every clean language is unchanged, skipped (full) or capped.")
-        return fail(head + why + "\n\n" + details, report_path)
-    note = ("Files with errors are **not** recorded; fix them and upload again (unchanged languages are skipped automatically).\n\n"
-            if any(fr["errors"] for fr in present) else "")
-    state = {"team": team, "track": track, "items": items, "replace_oldest": bool(replace_oldest),
-             "meta": Meta(submitter_email=email.strip())}
-    return (head + note + details, gr.update(value=report_path, visible=True),
-            gr.update(visible=True, value=f"Submit {len(writable)} language{'s' if len(writable) != 1 else ''} now"), state)
-
-
-def on_submit(state, request: gr.Request = None):
-    """Commit every writable language in one atomic commit; clear the state so a double click does nothing."""
-    if settings.is_closed():
-        return closed_message(), gr.update(visible=False), gr.update(visible=False), None
-    if not state:
-        return "Validate a file first, then press Submit.", gr.update(visible=False), gr.update(visible=False), None
-    team: Team = state["team"]
-    track = state["track"]
-    addr = client_address(request)
+        return fail(page(f"✗ Not submitted — team **{team.name}**",
+                         "**No file passed validation.** Fix the errors listed in the table and the validator output, then submit again."), report_path)
     allowed, retry = limit_record_ip.hit(addr)
+    what, limiter = "submissions from one address", limit_record_ip
     if allowed:
         allowed, retry = limit_record_team.hit(team.slug)
-        what = "submissions by one team"
-        limiter = limit_record_team
-    else:
-        what, limiter = "submissions from one address", limit_record_ip
+        what, limiter = "submissions by one team", limit_record_team
     if not allowed:
         log.warning("rate limit: record addr=%s team=%s", addr, team.slug)
-        return _too_many(what, limiter, retry), gr.update(visible=False), gr.update(), state
-    if any(not p.gz_path.is_file() for p in state["items"].values()):
-        return ("**Not recorded:** this validation is too old (prepared files are kept for an hour). "
-                "Validate again, then record.", gr.update(visible=False), gr.update(visible=False), None)
+        tmpfiles.remove(p.gz_path for p in items.values())
+        return fail(page(f"✗ Not submitted — team **{team.name}**", _too_many(what, limiter, retry)), report_path)
     try:
-        summary = slots.submit_many(track, team.slug, team.name, state["items"], state["meta"],
-                                    replace_oldest=state["replace_oldest"])
+        summary = slots.submit_many(track, team.slug, team.name, items, Meta(submitter_email=email.strip()),
+                                    replace_oldest=bool(replace_oldest))
     except SlotError as exc:
-        return f"**Not recorded:** {exc}", gr.update(visible=False), gr.update(), state
+        tmpfiles.remove(p.gz_path for p in items.values())
+        return fail(page(f"✗ Not submitted — team **{team.name}**", f"**Not submitted:** {exc}"), report_path)
     except Exception as exc:
         log.exception("submit failed")
-        return (f"**Not recorded:** the storage backend failed ({type(exc).__name__}). Nothing was saved; "
-                f"please retry in a minute or email {ORGANIZER_EMAIL}.", gr.update(visible=False), gr.update(), state)
-    written = [i for i in summary["items"] if i["action"] in ("slot", "replace")]
-    tmpfiles.remove(p.gz_path for p in state["items"].values())
-    if not summary.get("stored") or not written:
-        log.info("nothing recorded team=%s track=%s (state changed between validate and record)", team.slug, track)
-        return ("**Nothing was recorded.** The slots changed between *Validate* and *Record* (every language is now "
-                "unchanged, full or capped). Validate again to see the current state.",
-                gr.update(visible=False), gr.update(visible=False), None)
-    log.info("recorded team=%s track=%s langs=%s receipt=%s", team.slug, track, [i["language"] for i in written],
-             summary["bulk_receipt_id"])
-    receipt_path = _tmp_json(f"mast-receipt-{summary['bulk_receipt_id']}-", summary)
-    rows = ["| Language | Result | Slot | Receipt | sha256 |", "|---|---|---|---|---|"]
+        tmpfiles.remove(p.gz_path for p in items.values())
+        return fail(page(f"✗ Not submitted — team **{team.name}**",
+                         f"**Not submitted:** the storage backend failed ({type(exc).__name__}). Nothing was saved; "
+                         f"please retry in a minute or email {ORGANIZER_EMAIL}."), report_path)
+    tmpfiles.remove(p.gz_path for p in items.values())
     for i in summary["items"]:
-        res = {"slot": "recorded", "replace": "recorded (replaced " + ((i.get("replaced") or {}).get("receipt_id") or "?") + ")",
-               "unchanged": "unchanged", "skipped_full": "skipped: full", "capped": "not recorded: cap"}[i["action"]]
-        rows.append(f"| {display_name(i['language'])} | {res} | {i['slot'] or ''} | `{i['receipt_id'] or ''}` | `{(i['sha256'] or '')[:12]}` |")
+        results[i["language"]] = RESULT_TEXT[i["action"]].format(slot=i["slot"], receipt=i["receipt_id"], note=i["note"])
+    written = [i for i in summary["items"] if i["action"] in ("slot", "replace")]
+    if not summary.get("stored") or not written:
+        why = ("every file that passed is already recorded (identical to a stored run), or its language is full "
+               "(tick *replace the oldest run* to overwrite) or capped.")
+        return fail(page(f"· Nothing new to submit — team **{team.name}**", f"**Nothing was written:** {why}"), report_path)
+    log.info("recorded team=%s track=%s langs=%s receipt=%s", team.slug, track, [i["language"] for i in written], summary["bulk_receipt_id"])
+    receipt_path = _tmp_json(f"mast-receipt-{summary['bulk_receipt_id']}-", summary)
     body = (f"MAST 2026 submission receipt\n\nTeam: {team.name}\nTrack: {track}\nReceipt id: {summary['bulk_receipt_id']}\n"
             f"Uploaded at: {summary['uploaded_at']}\nSubmitted by: {summary['submitter_email']}\n\n"
             + "\n".join(f"{i['language']}: {i['action']}" + (f" slot {i['slot']} receipt {i['receipt_id']} sha256 {i['sha256']} llm {i['llm']} retriever {i['retriever']}"
                                                               if i['receipt_id'] else f" ({i['note']})") for i in summary["items"]) + "\n")
     mailed = send_receipt(settings, [summary["submitter_email"], *team.notify_emails(track)],
                           f"[MAST 2026] receipt {summary['bulk_receipt_id']} · {team.name} · {track}", body)
-    md = (f"### ✓ Submitted: {len(written)} language{'s' if len(written) != 1 else ''} recorded · receipt `{summary['bulk_receipt_id']}`\n\n"
-          + "\n".join(rows) + "\n\n" + _coverage_line(track, team) + "\n\n"
-          + ("A copy was emailed to the submitter and the team contact.\n" if mailed else
-             "Download the receipt below and keep it; it is your proof of submission.\n"))
-    return md, gr.update(value=receipt_path, visible=True), gr.update(visible=False), None
+    n = len(written)
+    headline = f"✓ Submitted: {n} language{'s' if n != 1 else ''} recorded — team **{team.name}** · receipt `{summary['bulk_receipt_id']}`"
+    note = ("A copy of the receipt was emailed to the submitter and the team contact." if mailed
+            else "Download the receipt below and keep it; it is your proof of submission.")
+    if any(fr["errors"] for fr in present):
+        note += " Files with errors were **not** submitted; fix them and submit again (unchanged languages are skipped automatically)."
+    return page(headline, note), gr.update(value=report_path, visible=True), gr.update(value=receipt_path, visible=True)
 
 
 def on_load():
@@ -337,6 +310,8 @@ RULES = f"""
 * Only agentic runs are accepted.
 * Every upload gets a receipt id and a sha256 per language. Keep the receipt. Organizers evaluate exactly the
   stored bytes.
+* One button: Submit validates the upload and records every file that passes. Files with errors are never
+  stored; fix them and submit again, unchanged languages are skipped automatically.
 * Errors block a file; warnings do not, but each one costs score. `Exact Answer:` must appear in the final
   `output_text`; unknown docids score as misses; unprefixed `query_id`s are accepted and reconstructed.
 * Overlap languages (bn, hi, ta) exist in both tracks; submit to each track you take part in.
@@ -358,21 +333,18 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
             upload = gr.File(label="Run file(s): one .jsonl / .jsonl.gz, or a .zip / .tar / .tar.gz / .tgz with one per language",
                              file_types=[".jsonl", ".gz", ".zip", ".tar", ".tgz"], type="filepath")
             replace_oldest = gr.Checkbox(label="Replace the oldest run for languages whose 3 slots are already full", value=False)
-    validate_btn = gr.Button("Validate", variant="primary")
+    submit_btn = gr.Button("Submit", variant="primary")
     status = gr.Markdown()
-    report_dl = gr.DownloadButton("Download validation report (JSON)", visible=False)
-    submit_btn = gr.Button("Submit", variant="primary", visible=False)
-    result = gr.Markdown()
-    receipt_dl = gr.DownloadButton("Download receipt (JSON)", visible=False)
-    state = gr.State(None)
+    with gr.Row():
+        report_dl = gr.DownloadButton("Download validation report (JSON)", visible=False)
+        receipt_dl = gr.DownloadButton("Download receipt (JSON)", visible=False)
     with gr.Accordion("Rules and help", open=False):
         gr.Markdown(RULES)
     gr.Markdown("<small>Registration closes with the run deadline. New registrations are recognized within a minute.</small>")
 
     demo.load(on_load, outputs=[closed_banner])
-    validate_btn.click(on_validate, inputs=[team_name, track, email, replace_oldest, upload],
-                       outputs=[status, report_dl, submit_btn, state])
-    submit_btn.click(on_submit, inputs=[state], outputs=[result, receipt_dl, submit_btn, state])
+    submit_btn.click(on_submit, inputs=[team_name, track, email, replace_oldest, upload],
+                     outputs=[status, report_dl, receipt_dl])
 
 if __name__ == "__main__":
     demo.queue(default_concurrency_limit=4).launch(max_file_size="200mb", show_error=True)
