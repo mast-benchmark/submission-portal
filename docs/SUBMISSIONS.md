@@ -145,28 +145,25 @@ into errors. `--json` writes the full report.
 
 ## The form
 
-One form: team name, track, contact email, the file, and a *replace the oldest run* checkbox.
-The file is either
-**one `.jsonl` / `.jsonl.gz`** or **one archive** (`.zip`, `.tar`, `.tar.gz`, `.tgz`) holding one such file per
-language, named however you like.
-Everything else (language, LLM, retriever) is read from the records.
+One form, one button. Inputs: team name, track, contact email, the file, and a *replace the oldest run* checkbox.
+The file is either **one `.jsonl` / `.jsonl.gz`** or **one archive** (`.zip`, `.tar`, `.tar.gz`, `.tgz`) holding
+one such file per language, named however you like. Everything else (language, LLM, retriever) is read from the
+records.
 
-*Validate* shows one row per file: language, records, LLM and retriever, verdict, and the action that *Record*
-will take ("→ slot 1", "replaces slot 1 (…)", "unchanged: identical to slot 2", "skipped: all 3 slots are
-filled", "not recorded (errors)", "not recorded (unreadable)"), plus the full validator output and a JSON
-report download. For an archive, the languages of the track with no file are listed as missing.
+**Submit** validates the upload and, in the same step, records every file that passed. The page then shows one of
+three outcomes, always with the full validator output and a JSON report download:
 
-*Record* writes every clean file in one atomic commit and gives one receipt for the upload with a receipt id
-and sha256 per language. Files with errors are simply not recorded; fix them and upload again, and the unchanged
-languages are recognized and skipped. Languages whose three slots are full are skipped unless you tick
-*replace the oldest run*. *Record* must follow *Validate* within an hour; after that the prepared files are
-gone and the page asks you to validate again. If the slots changed in between (another upload by the team),
-nothing is written and the page says so.
-
+* **Submitted.** Headline "✓ Submitted: N languages recorded · receipt <id>", one row per file with its result
+  ("submitted → slot 1 · receipt …", "submitted → slot 1, replaced the oldest run", "unchanged: identical to
+  slot 2", "not submitted: all 3 slots are filled …", "not submitted (errors)"), the coverage line, and a receipt
+  download. Files with errors in the same archive are simply not stored; fix them and submit again, and the
+  unchanged languages are skipped automatically.
+* **Nothing new to submit.** Every file that passed is already recorded, or its language is full (tick *replace
+  the oldest run*) or capped. Nothing is written.
+* **Not submitted.** No file passed validation, or the request was refused (rate limit, storage failure). The
+  table shows each file's errors; nothing is written.
 
 ## What the page says, case by case
-
-Everything below was captured from the running portal. The first line is the headline the submitter sees.
 
 **Refused before the file is looked at** (nothing is validated or recorded):
 
@@ -179,34 +176,25 @@ Everything below was captured from the running portal. The first line is the hea
 | Team name close to a registered one | *No registered team matches **Test Sahle**. Did you mean **Test Sahel**? If your team is new, register here …* |
 | Track not in the registration | ***Test Sahel** is registered for the **indic** track only; this upload is for **multilingual**. Email … to add a track to your registration. Nothing was recorded.* |
 | Email not on the registration for that track | *The contact email is not one of the addresses registered for **Test Sahel** on the indic track. Use an address from your team's latest registration, or email … to update it. Nothing was recorded.* |
-| Too many requests | ***Too many requests:** the limit is 20 per 10 minutes for validations from one address. Try again in about N minutes. Nothing was recorded.* |
+| Too many requests | ***Too many requests:** the limit is 20 per 10 minutes for submissions from one address. Try again in about N minutes. Nothing was recorded.* |
 | Wrong file extension | Gradio's own notice: *Invalid file type. Please upload a file that is one of these formats: .jsonl, .gz, .zip, .tar, .tgz* |
 
-**After validation** (one row per file; for an archive, also one row per language of the track with no file):
+**After Submit** (one row per file; for an archive, also one row per language of the track with no file):
 
-| Case | Headline | Rows | Record button |
-|---|---|---|---|
-| Single file passes | *✓ 1 of 1 file ready to record — team **Test Sahel*** | `Hindi (hi) · file · 50 · llm · retriever · ✓ · → slot 1` | *Record 1 language* |
-| Single file passes with warnings | same headline | `… ✓ 2 warnings · → slot 1`; the warnings are listed in the full validator output below the table | *Record 1 language* |
-| Single file fails | *✗ 0 of 1 file ready to record — team **Test Sahel*** then ***Nothing to record:** no file passed validation. Fix the errors and upload again.* | `… ✗ 1 error · not recorded (errors)`; each error is spelled out in the full validator output (e.g. *coverage: 1 official query_id missing (found 49 of 50) (e.g. hi-10)*) | hidden |
-| Archive, some pass, some fail | *✓ 2 of 3 files ready to record* then *Files with errors are **not** recorded; fix them and upload again (unchanged languages are skipped automatically).* | passing rows show `→ slot N`; failing rows `✗ 1 error · not recorded (errors)`; missing languages `missing · — (no file in the archive)`; stray members are listed above the table as ignored | *Record 2 languages* (records only the passing ones) |
-| Same archive uploaded again | *✓ 2 of 3 files ready to record* then *Nothing to record: every clean language is unchanged, skipped (full) or capped.* | passing rows now `unchanged: identical to slot 1 (uploaded …)`; the failing row is unchanged | hidden |
-| A language whose 3 slots are full | passing row shows `skipped: all 3 slots are filled; tick 'replace the oldest run' to replace one`; with the box ticked, `replaces slot 1 (llm, date)` | | shown only if something is writable |
-| A member that validated but could not be re-read | row shows `not recorded (unreadable: …)`; other rows proceed | | |
-
-**After Record:**
-
-| Case | Message |
+| Case | Headline and rows |
 |---|---|
-| Recorded | *✓ 2 languages recorded · receipt `20260909T160707Z-212fc020`*, a table with one line per language (recorded / recorded (replaced …) / unchanged / skipped: full / not recorded: cap, slot, receipt id, sha256), the coverage line, and *Download the receipt below and keep it; it is your proof of submission.* (or *A copy was emailed …* once SMTP is configured) |
-| Record clicked twice, or after a refresh | *Validate a file first.* |
-| Slots changed between Validate and Record | ***Nothing was recorded.** The slots changed between Validate and Record (every language is now unchanged, full or capped). Validate again to see the current state.* |
-| More than an hour after Validate | ***Not recorded:** this validation is too old (prepared files are kept for an hour). Validate again, then record.* |
-| Team or address over the submission rate limit | ***Too many requests:** the limit is 15 per 1 hour for submissions by one team. Try again in about N minutes. Nothing was recorded.* |
-| Storage failure | ***Not recorded:** the storage backend failed (…). Nothing was saved; please retry in a minute or email …* |
+| Single file passes | *✓ Submitted: 1 language recorded — team **Sahel Test** · receipt `…`*; row `Hindi (hi) · file · 50 · llm · retriever · ✓ · submitted → slot 1 · receipt …`; receipt download shown |
+| Single file passes with warnings | same, `✓ 2 warnings` in the Validation column; the warnings are spelled out in the full validator output |
+| Single file fails | *✗ Not submitted — team …* then *No file passed validation. Fix the errors listed …*; row `… ✗ 1 error · not submitted (errors)`; each error is in the full validator output (e.g. *coverage: 1 official query_id missing (found 49 of 50) (e.g. hi-10)*); no receipt |
+| Archive, some pass, some fail | *✓ Submitted: 2 languages recorded …* plus *Files with errors were not submitted; fix them and submit again*; passing rows `submitted → slot N`; failing rows `not submitted (errors)`; missing languages `missing`; stray members listed as ignored |
+| Same upload again | *· Nothing new to submit — team …*; passing rows `unchanged: identical to slot 1 (uploaded …)`; no receipt |
+| A language whose 3 slots are full | row `not submitted: all 3 slots are filled; tick 'replace the oldest run' to replace one`; with the box ticked, `submitted → slot 1, replaced the oldest run` |
+| A member that validated but could not be re-read | row `not submitted (unreadable: …)`; other rows proceed |
+| Team or address over the submission rate limit | *✗ Not submitted …* with ***Too many requests:** the limit is 15 per 1 hour for submissions by one team …*; nothing written |
+| Storage failure | *✗ Not submitted …* with ***Not submitted:** the storage backend failed (…). Nothing was saved; please retry in a minute or email …* |
 
 The full validator output (the same text the CLI prints) is always available under *Full validator output*, and
-the JSON report is always downloadable, pass or fail.
+the JSON report is always downloadable, pass or fail. The receipt download appears only when something was recorded.
 
 ## Slots and replacement
 
@@ -237,7 +225,6 @@ the JSON report is always downloadable, pass or fail.
 | Recorded submissions | 10 per hour per client address | `RATE_RECORD_PER_IP` |
 | Recorded submissions per team | 15 per hour from any address | `RATE_RECORD_PER_TEAM` |
 | Concurrent validations on the Space | 4; further requests queue | fixed (`app.py`) |
-| Time between *Validate* and *Record* | 1 hour; after that validate again | fixed (`tmpfiles.py`) |
 | Roster refresh | within 60 seconds of a `teams.csv` change | `ROSTER_TTL_SECONDS` |
 | Rejected-name log | at most 200 distinct names per 10-minute window, written as one file | fixed (`rejected.py`) |
 
