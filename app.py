@@ -244,12 +244,13 @@ def on_validate(team_name, track, email, replace_oldest, file, request: gr.Reque
     table = _plan_table(rd["files"], actions)
     zip_level = "\n".join(f"* {f['message']}" + (f" (e.g. {', '.join(f['examples'][:5])})" if f["examples"] else "")
                           for f in rd["findings"])
-    head = (f"### {'✓' if items else '✗'} {len(items)} of {len(present)} file{'s' if len(present) != 1 else ''} ready to record — team **{team.name}**\n"
-            f"{_coverage_line(track, team)}\n\n{table}\n\n" + (zip_level + "\n\n" if zip_level else ""))
+    head = (f"### {'✓' if items else '✗'} Validation: {len(items)} of {len(present)} file{'s' if len(present) != 1 else ''} passed — team **{team.name}**\n"
+            + ("**Nothing is submitted yet. Press the Submit button below to record the passing file(s).**\n\n" if items else "")
+            + f"{_coverage_line(track, team)}\n\n{table}\n\n" + (zip_level + "\n\n" if zip_level else ""))
     details = f"<details><summary>Full validator output</summary>\n\n```text\n{text}```\n</details>"
     if not writable:
         tmpfiles.remove(p.gz_path for p in items.values())
-        why = "**Nothing to record:** " + ("no file passed validation. Fix the errors and upload again." if not items
+        why = "**Nothing to submit:** " + ("no file passed validation. Fix the errors and upload again." if not items
                                             else "every clean language is unchanged, skipped (full) or capped.")
         return fail(head + why + "\n\n" + details, report_path)
     note = ("Files with errors are **not** recorded; fix them and upload again (unchanged languages are skipped automatically).\n\n"
@@ -257,7 +258,7 @@ def on_validate(team_name, track, email, replace_oldest, file, request: gr.Reque
     state = {"team": team, "track": track, "items": items, "replace_oldest": bool(replace_oldest),
              "meta": Meta(submitter_email=email.strip())}
     return (head + note + details, gr.update(value=report_path, visible=True),
-            gr.update(visible=True, value=f"Record {len(writable)} language{'s' if len(writable) != 1 else ''}"), state)
+            gr.update(visible=True, value=f"Submit {len(writable)} language{'s' if len(writable) != 1 else ''} now"), state)
 
 
 def on_submit(state, request: gr.Request = None):
@@ -265,7 +266,7 @@ def on_submit(state, request: gr.Request = None):
     if settings.is_closed():
         return closed_message(), gr.update(visible=False), gr.update(visible=False), None
     if not state:
-        return "Validate a file first.", gr.update(visible=False), gr.update(visible=False), None
+        return "Validate a file first, then press Submit.", gr.update(visible=False), gr.update(visible=False), None
     team: Team = state["team"]
     track = state["track"]
     addr = client_address(request)
@@ -312,7 +313,7 @@ def on_submit(state, request: gr.Request = None):
                                                               if i['receipt_id'] else f" ({i['note']})") for i in summary["items"]) + "\n")
     mailed = send_receipt(settings, [summary["submitter_email"], *team.notify_emails(track)],
                           f"[MAST 2026] receipt {summary['bulk_receipt_id']} · {team.name} · {track}", body)
-    md = (f"### ✓ {len(written)} language{'s' if len(written) != 1 else ''} recorded · receipt `{summary['bulk_receipt_id']}`\n\n"
+    md = (f"### ✓ Submitted: {len(written)} language{'s' if len(written) != 1 else ''} recorded · receipt `{summary['bulk_receipt_id']}`\n\n"
           + "\n".join(rows) + "\n\n" + _coverage_line(track, team) + "\n\n"
           + ("A copy was emailed to the submitter and the team contact.\n" if mailed else
              "Download the receipt below and keep it; it is your proof of submission.\n"))
@@ -360,7 +361,7 @@ with gr.Blocks(title="MAST 2026 submission", analytics_enabled=False) as demo:
     validate_btn = gr.Button("Validate", variant="primary")
     status = gr.Markdown()
     report_dl = gr.DownloadButton("Download validation report (JSON)", visible=False)
-    submit_btn = gr.Button("Record", variant="primary", visible=False)
+    submit_btn = gr.Button("Submit", variant="primary", visible=False)
     result = gr.Markdown()
     receipt_dl = gr.DownloadButton("Download receipt (JSON)", visible=False)
     state = gr.State(None)
