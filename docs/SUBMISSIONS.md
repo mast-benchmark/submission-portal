@@ -3,7 +3,7 @@
 ## Where to submit
 
 * Portal: **https://huggingface.co/spaces/sahel-sh/submit**
-* Deadline: **15 September 2026, 23:59 AoE** (the portal closes at 2026-09-16 11:59 UTC).
+* Deadline: **25 September 2026, 23:59 AoE** (the portal closes at 2026-09-26 11:59 UTC).
 * You need: your team name as registered (case and punctuation do not matter, word order does), the track,
   a contact email, and the file. Language, LLM and retriever are read from the records.
 * The track must be one your team registered for, and the contact email must be one of the addresses on your
@@ -169,7 +169,7 @@ three outcomes, always with the full validator output and a JSON report download
 
 | Case | Message |
 |---|---|
-| After the deadline | *Submissions are closed. The run submission deadline was Wednesday 16 September 2026, 11:59 UTC (23:59 AoE on 15 September). Contact mast-organizers@googlegroups.com if you believe this is an error.* |
+| After the deadline | *Submissions are closed. The run submission deadline was Saturday 26 September 2026, 11:59 UTC (23:59 AoE on 25 September). Contact mast-organizers@googlegroups.com if you believe this is an error.* |
 | A field left empty | *Please fill in: team name.* (lists every missing field) |
 | Email not an address | *The contact email does not look like an email address.* |
 | Team not registered | *No registered team matches **Ghost Team**. Make sure the team name is exactly as you registered it. If your team is new, register here (link) and try again in two minutes so the registration propagates. Still not recognized? Email …* |
@@ -213,7 +213,7 @@ the JSON report is always downloadable, pass or fail. The receipt download appea
 
 | Limit | Value | Where set |
 |---|---|---|
-| Deadline | 15 Sep 2026 23:59 AoE = 2026-09-16 11:59:59 UTC; the form refuses after it | `MAST_DEADLINE_UTC` Space variable (ISO-8601) |
+| Deadline | 25 Sep 2026 23:59 AoE = 2026-09-26 11:59:59 UTC; the form refuses after it | `MAST_DEADLINE_UTC` Space variable (ISO-8601) |
 | Records per file | exactly the 50 official query ids of the language, no more, no less | fixed |
 | Runs per (team, track, language) | 3 slots; a 4th upload is skipped unless *replace the oldest run* is ticked | fixed |
 | Lifetime uploads per (team, track, language) | 10, replacements included; then the language is refused until an organizer raises it | `MAX_UPLOADS_PER_SLOT_KEY` |

@@ -8,9 +8,9 @@ def test_defaults_and_deadline(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     s = Settings.from_env()
     assert s.storage_backend == "local" and not s.email_enabled
-    assert s.deadline == dt.datetime(2026, 9, 16, 11, 59, 59, tzinfo=dt.timezone.utc)
-    assert not s.is_closed(dt.datetime(2026, 9, 16, 11, 0, tzinfo=dt.timezone.utc))
-    assert s.is_closed(dt.datetime(2026, 9, 16, 12, 0, tzinfo=dt.timezone.utc))
+    assert s.deadline == dt.datetime(2026, 9, 26, 11, 59, 59, tzinfo=dt.timezone.utc)   # 23:59 AoE on 25 Sep
+    assert not s.is_closed(dt.datetime(2026, 9, 26, 11, 0, tzinfo=dt.timezone.utc))
+    assert s.is_closed(dt.datetime(2026, 9, 26, 12, 0, tzinfo=dt.timezone.utc))
 
 
 def test_env_overrides(monkeypatch):
