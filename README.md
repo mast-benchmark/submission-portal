@@ -23,7 +23,7 @@ uploads, manifests and receipts are in a **private** dataset repo named by `SUBM
 | `HF_TOKEN` | secret | write access to the private submissions repo |
 | `SUBMISSIONS_REPO` | variable | e.g. `mast-benchmark/mast-2026-submissions` |
 | `STORAGE_BACKEND` | variable | `hf` on the Space; `local` for development |
-| `MAST_DEADLINE_UTC` | variable | ISO-8601; default `2026-09-16T11:59:59+00:00` (Sep 15 AoE) |
+| `MAST_DEADLINE_UTC` | variable | ISO-8601; default `2026-09-26T11:59:59+00:00` (Sep 25 AoE) |
 | `MAX_UPLOADS_PER_SLOT_KEY` | variable | lifetime uploads per (team, track, language); default 10 |
 | `RATE_VALIDATE_PER_IP` | variable | validations per client address, `COUNT/SECONDS` or `off`; default `20/600` |
 | `RATE_RECORD_PER_IP` | variable | recorded submissions per client address; default `10/3600` |

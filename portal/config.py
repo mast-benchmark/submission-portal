@@ -9,7 +9,7 @@ from typing import Optional
 
 from .ratelimit import Limit, parse_limit
 
-DEFAULT_DEADLINE = "2026-09-16T11:59:59+00:00"   # Sep 15, 2026, end of day AoE (UTC-12)
+DEFAULT_DEADLINE = "2026-09-26T11:59:59+00:00"   # Sep 25, 2026, end of day AoE (UTC-12)
 ORGANIZER_EMAIL = "mast-organizers@googlegroups.com"
 FIRE_URL = "http://fire.irsi.res.in/"
 SITE_URL = "https://mast-benchmark.github.io/"
